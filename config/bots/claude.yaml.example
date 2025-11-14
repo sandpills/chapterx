@@ -1,0 +1,62 @@
+# Example bot configuration
+# Rename to claude.yaml (or your bot name)
+
+name: Claude
+innerName: Claude
+
+# Model configuration
+mode: prefill  # or 'chat'
+continuationModel: claude-3-5-sonnet-20241022
+temperature: 1.0
+maxTokens: 4096
+topP: 1.0
+
+# Context configuration
+recencyWindowMessages: 400  # Optional: Max messages to include
+recencyWindowCharacters: 100000  # Optional: Max characters to include
+# When both specified, whichever limit is reached first is used
+rollingThreshold: 50  # Roll context after this many new messages
+recentParticipantCount: 10  # Number of recent participants for stop sequences
+authorizedRoles: []  # Roles authorized for .history commands (empty = all allowed)
+# authorizedRoles: ["Admin", "Moderator"]  # Example: restrict to specific roles
+
+# Image configuration
+includeImages: true
+maxImages: 5
+
+# Tool configuration
+toolsEnabled: true
+toolOutputVisible: false  # Show tool calls in Discord
+maxToolDepth: 100  # Max tool call iterations
+
+# MCP Servers (optional - configure multiple servers)
+# mcpServers:
+#   - name: filesystem
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+#   
+#   - name: everything
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-everything"]
+#   
+#   - name: github
+#     command: npx
+#     args: ["-y", "@modelcontextprotocol/server-github"]
+#     env:
+#       GITHUB_TOKEN: "your-github-token"
+
+# Stop sequences (in addition to participant names)
+stopSequences: []
+
+# Retry configuration
+llmRetries: 3
+discordBackoffMax: 32000  # Max backoff in ms for Discord API
+
+# Optional system prompt
+# systemPrompt: "You are a helpful assistant."
+
+# Misc
+replyOnRandom: 0  # Random reply probability (0-1000000)
+replyOnName: false  # Reply when name is mentioned
+maxQueuedReplies: 1  # Max queued replies before dropping
+
