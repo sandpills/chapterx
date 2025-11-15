@@ -173,24 +173,25 @@ export class AgentLoop {
         continue
       }
 
-      // 1. Check for bot mention
-      if (this.botUserId && message.mentions?.has(this.botUserId)) {
-        logger.debug({ messageId: message.id }, 'Activated by mention')
-        return true
-      }
-
-      // 2. Check for reply to bot's message
-      if (message.reference?.messageId && this.botMessageIds.has(message.reference.messageId)) {
-        logger.debug({ messageId: message.id }, 'Activated by reply')
-        return true
-      }
-
-      // 3. Check for m command
+      // 1. Check for m command FIRST (before mention check)
+      // This ensures "m continue <@bot>" gets flagged for deletion
       const content = message.content?.trim()
       if (content?.startsWith('m ')) {
         logger.debug({ messageId: message.id, command: content }, 'Activated by m command')
         // Store m command event for deletion
         event.data._isMCommand = true
+        return true
+      }
+
+      // 2. Check for bot mention
+      if (this.botUserId && message.mentions?.has(this.botUserId)) {
+        logger.debug({ messageId: message.id }, 'Activated by mention')
+        return true
+      }
+
+      // 3. Check for reply to bot's message
+      if (message.reference?.messageId && this.botMessageIds.has(message.reference.messageId)) {
+        logger.debug({ messageId: message.id }, 'Activated by reply')
         return true
       }
 
