@@ -40,15 +40,7 @@ export class ContextBuilder {
     // 2. Filter dot messages
     messages = this.filterDotMessages(messages)
 
-    // 3. Apply rolling truncation if needed
-    const { messages: rolledMessages, didRoll } = this.applyRollingTruncation(
-      messages,
-      messagesSinceRoll,
-      config
-    )
-    messages = rolledMessages
-
-    // 4. Convert to participant messages
+    // 3. Convert to participant messages (limits applied later on final context)
     const participantMessages = this.formatMessages(messages, discordContext.images, config)
 
     // 5. Interleave historical tool use from cache (limited to last 5 calls with results)
@@ -90,8 +82,8 @@ export class ContextBuilder {
     participantMessages.length = 0
     participantMessages.push(...interleavedMessages)
 
-    // 5.5. Apply ALL limits on final assembled context (after images & tools added)
-    const { messages: finalMessages, didTruncate } = this.applyFinalLimits(
+    // 5. Apply limits on final assembled context (after images & tools added)
+    const { messages: finalMessages, didTruncate } = this.applyLimits(
       participantMessages, 
       messagesSinceRoll,
       config
@@ -100,7 +92,7 @@ export class ContextBuilder {
     participantMessages.push(...finalMessages)
 
     // 6. Determine cache marker
-    const cacheMarker = this.determineCacheMarker(messages, lastCacheMarker, didRoll || didTruncate)
+    const cacheMarker = this.determineCacheMarker(messages, lastCacheMarker, didTruncate)
 
     // Apply cache marker to appropriate message
     if (cacheMarker) {
@@ -282,10 +274,10 @@ export class ContextBuilder {
   }
 
   /**
-   * Apply ALL limits on final assembled context (after images and tools added)
-   * This is the authoritative limit check that accounts for total payload size
+   * Apply limits on assembled context (after images and tools added)
+   * This is the ONLY place limits are enforced - accounts for total payload size
    */
-  private applyFinalLimits(
+  private applyLimits(
     messages: ParticipantMessage[],
     messagesSinceRoll: number,
     config: BotConfig
@@ -315,16 +307,19 @@ export class ContextBuilder {
     }
     
     const hardMaxCharacters = config.hardMaxCharacters || 500000
+    const normalLimit = config.recencyWindowCharacters || 100000  // Default normal limit
     
     // ALWAYS enforce hard maximum (even when not rolling)
+    // When exceeded, truncate to NORMAL limit (not hard max) to reset cache properly
     if (totalChars > hardMaxCharacters) {
       logger.warn({
         totalChars,
         hardMax: hardMaxCharacters,
+        normalLimit,
         messageCount: messages.length
-      }, 'HARD LIMIT EXCEEDED on final context - Forcing truncation')
+      }, 'HARD LIMIT EXCEEDED - Truncating to normal limit and forcing roll')
       
-      return this.truncateToLimit(messages, hardMaxCharacters, true)
+      return this.truncateToLimit(messages, normalLimit, true)
     }
     
     // If not rolling yet, allow normal limits to be exceeded (for cache efficiency)
@@ -340,7 +335,6 @@ export class ContextBuilder {
     }
     
     // Time to roll - check normal limits
-    const normalLimit = config.recencyWindowCharacters || Infinity
     const messageLimit = config.recencyWindowMessages || Infinity
     
     // Apply character limit
