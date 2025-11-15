@@ -123,7 +123,7 @@ export class ContextBuilder {
 
     return {
       request,
-      didRoll,
+      didRoll: didTruncate,
       cacheMarker,
     }
   }
@@ -169,109 +169,6 @@ export class ContextBuilder {
     })
   }
 
-  private applyRollingTruncation(
-    messages: DiscordMessage[],
-    messagesSinceRoll: number,
-    config: BotConfig
-  ): { messages: DiscordMessage[]; didRoll: boolean } {
-    const shouldRoll = messagesSinceRoll >= config.rolling_threshold
-
-    // Calculate total characters
-    const totalChars = messages.reduce((sum, m) => sum + m.content.length, 0)
-    
-    // Hard maximum to prevent API errors (never exceed this)
-    // Default: 500k chars = ~140k tokens (well under 200k limit)
-    const hardMaxCharacters = config.hard_max_characters || 500000
-    
-    // Check hard maximum first - always enforce this
-    if (totalChars > hardMaxCharacters) {
-      logger.warn({
-        totalChars,
-        hardMax: hardMaxCharacters,
-        messageCount: messages.length
-      }, 'HARD LIMIT EXCEEDED - Forcing truncation')
-      
-      // Force truncate to hard max
-      let keptChars = 0
-      let cutoffIndex = messages.length
-      for (let i = messages.length - 1; i >= 0; i--) {
-        keptChars += messages[i]!.content.length
-        if (keptChars > hardMaxCharacters) {
-          cutoffIndex = i + 1
-          break
-        }
-      }
-      
-      return {
-        messages: messages.slice(cutoffIndex),
-        didRoll: true,  // Force roll when hitting hard limit
-      }
-    }
-
-    // If not rolling yet, allow exceeding normal limits (for prompt caching)
-    if (!shouldRoll) {
-      logger.debug({ 
-        messagesSinceRoll, 
-        threshold: config.rolling_threshold,
-        messageCount: messages.length,
-        totalChars
-      }, 'Not rolling yet - keeping all messages for cache efficiency')
-      return { messages, didRoll: false }
-    }
-
-    // Time to roll - apply configured limits
-    let messageLimitCutoff = 0  // Index to slice from (0 = no limit)
-    let characterLimitCutoff = 0  // Index to slice from (0 = no limit)
-
-    // Calculate message limit cutoff
-    if (config.recency_window_messages !== undefined && messages.length > config.recency_window_messages) {
-      messageLimitCutoff = messages.length - config.recency_window_messages
-    }
-
-    // Calculate character limit cutoff
-    if (config.recency_window_characters !== undefined) {
-      let chars = 0
-
-      for (let i = messages.length - 1; i >= 0; i--) {
-        chars += messages[i]!.content.length
-        if (chars > config.recency_window_characters) {
-          characterLimitCutoff = i + 1
-          break
-        }
-      }
-    }
-
-    // Use the more restrictive limit (higher cutoff index = fewer messages kept)
-    const cutoff = Math.max(messageLimitCutoff, characterLimitCutoff)
-
-    if (cutoff === 0) {
-      // No truncation needed
-      return { messages, didRoll: false }
-    }
-
-    const truncatedMessages = messages.slice(cutoff)
-    const appliedLimit = characterLimitCutoff > messageLimitCutoff ? 'characters' : 'messages'
-    const keptChars = truncatedMessages.reduce((sum, m) => sum + m.content.length, 0)
-
-    logger.info(
-      { 
-        removed: cutoff,
-        kept: truncatedMessages.length,
-        appliedLimit,
-        messageLimitCutoff,
-        characterLimitCutoff,
-        originalCount: messages.length,
-        totalChars,
-        keptChars
-      },
-      'Rolling context: truncated by ' + appliedLimit
-    )
-
-    return {
-      messages: truncatedMessages,
-      didRoll: true,
-    }
-  }
 
   /**
    * Apply limits on assembled context (after images and tools added)
