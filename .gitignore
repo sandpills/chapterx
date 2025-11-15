@@ -16,7 +16,6 @@ bot.log
 
 # Cache
 cache/
-tools/
 
 # IDE
 .vscode/
@@ -36,3 +35,4 @@ coverage/
 *.tmp
 
 config/shared.yaml
+config/bots/StrangeSonnet4.5.yaml
