@@ -90,8 +90,17 @@ export class ContextBuilder {
     participantMessages.length = 0
     participantMessages.push(...interleavedMessages)
 
+    // 5.5. Apply ALL limits on final assembled context (after images & tools added)
+    const { messages: finalMessages, didTruncate } = this.applyFinalLimits(
+      participantMessages, 
+      messagesSinceRoll,
+      config
+    )
+    participantMessages.length = 0
+    participantMessages.push(...finalMessages)
+
     // 6. Determine cache marker
-    const cacheMarker = this.determineCacheMarker(messages, lastCacheMarker, didRoll)
+    const cacheMarker = this.determineCacheMarker(messages, lastCacheMarker, didRoll || didTruncate)
 
     // Apply cache marker to appropriate message
     if (cacheMarker) {
@@ -270,6 +279,150 @@ export class ContextBuilder {
       messages: truncatedMessages,
       didRoll: true,
     }
+  }
+
+  /**
+   * Apply ALL limits on final assembled context (after images and tools added)
+   * This is the authoritative limit check that accounts for total payload size
+   */
+  private applyFinalLimits(
+    messages: ParticipantMessage[],
+    messagesSinceRoll: number,
+    config: BotConfig
+  ): { messages: ParticipantMessage[], didTruncate: boolean } {
+    const shouldRoll = messagesSinceRoll >= config.rollingThreshold
+    
+    // Calculate total size of FINAL context (text + images + tool results)
+    let totalChars = 0
+    for (const msg of messages) {
+      for (const block of msg.content) {
+        if (block.type === 'text') {
+          totalChars += (block as any).text.length
+        } else if (block.type === 'image') {
+          // Base64 data counts toward payload size
+          const imageBlock = block as any
+          if (imageBlock.source?.data) {
+            totalChars += imageBlock.source.data.length
+          }
+        } else if (block.type === 'tool_result') {
+          const toolBlock = block as any
+          const content = typeof toolBlock.content === 'string' 
+            ? toolBlock.content 
+            : JSON.stringify(toolBlock.content)
+          totalChars += content.length
+        }
+      }
+    }
+    
+    const hardMaxCharacters = config.hardMaxCharacters || 500000
+    
+    // ALWAYS enforce hard maximum (even when not rolling)
+    if (totalChars > hardMaxCharacters) {
+      logger.warn({
+        totalChars,
+        hardMax: hardMaxCharacters,
+        messageCount: messages.length
+      }, 'HARD LIMIT EXCEEDED on final context - Forcing truncation')
+      
+      return this.truncateToLimit(messages, hardMaxCharacters, true)
+    }
+    
+    // If not rolling yet, allow normal limits to be exceeded (for cache efficiency)
+    if (!shouldRoll) {
+      logger.debug({
+        messagesSinceRoll,
+        threshold: config.rollingThreshold,
+        messageCount: messages.length,
+        totalChars,
+        totalMB: (totalChars / 1024 / 1024).toFixed(2)
+      }, 'Not rolling yet - keeping all messages for cache')
+      return { messages, didTruncate: false }
+    }
+    
+    // Time to roll - check normal limits
+    const normalLimit = config.recencyWindowCharacters || Infinity
+    const messageLimit = config.recencyWindowMessages || Infinity
+    
+    // Apply character limit
+    if (totalChars > normalLimit) {
+      logger.info({
+        totalChars,
+        limit: normalLimit,
+        messageCount: messages.length
+      }, 'Rolling: Character limit exceeded, truncating final context')
+      return this.truncateToLimit(messages, normalLimit, true)
+    }
+    
+    // Apply message count limit
+    if (messages.length > messageLimit) {
+      logger.info({
+        messageCount: messages.length,
+        limit: messageLimit,
+        keptChars: totalChars
+      }, 'Rolling: Message count limit exceeded, truncating')
+      return { 
+        messages: messages.slice(messages.length - messageLimit), 
+        didTruncate: true 
+      }
+    }
+    
+    return { messages, didTruncate: false }
+  }
+  
+  /**
+   * Helper to truncate messages to character limit (works on ParticipantMessage[])
+   */
+  private truncateToLimit(
+    messages: ParticipantMessage[], 
+    charLimit: number,
+    isHardLimit: boolean
+  ): { messages: ParticipantMessage[], didTruncate: boolean } {
+    let keptChars = 0
+    let cutoffIndex = messages.length
+    
+    // Count from end backwards
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i]!
+      let msgSize = 0
+      
+      for (const block of msg.content) {
+        if (block.type === 'text') {
+          msgSize += (block as any).text.length
+        } else if (block.type === 'image') {
+          const imageBlock = block as any
+          if (imageBlock.source?.data) {
+            msgSize += imageBlock.source.data.length
+          }
+        } else if (block.type === 'tool_result') {
+          const toolBlock = block as any
+          const content = typeof toolBlock.content === 'string' 
+            ? toolBlock.content 
+            : JSON.stringify(toolBlock.content)
+          msgSize += content.length
+        }
+      }
+      
+      if (keptChars + msgSize > charLimit) {
+        cutoffIndex = i + 1
+        break
+      }
+      
+      keptChars += msgSize
+    }
+    
+    const truncated = messages.slice(cutoffIndex)
+    
+    if (cutoffIndex > 0) {
+      logger.warn({
+        removed: cutoffIndex,
+        kept: truncated.length,
+        keptChars,
+        limitType: isHardLimit ? 'HARD' : 'normal',
+        charLimit
+      }, `Truncated final context to ${isHardLimit ? 'HARD' : 'normal'} limit`)
+    }
+    
+    return { messages: truncated, didTruncate: cutoffIndex > 0 }
   }
 
   private determineCacheMarker(
