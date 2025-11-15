@@ -175,13 +175,8 @@ export class ContextBuilder {
   ): { messages: DiscordMessage[]; didRoll: boolean } {
     const shouldRoll = messagesSinceRoll >= config.rollingThreshold
 
-    if (!shouldRoll) {
-      // Not time to roll yet - keep all messages to preserve cache
-      return { messages, didRoll: false }
-    }
-
-    // Time to roll - apply both limits if specified
-    // When both limits specified, lower bound (more restrictive) takes priority
+    // ALWAYS apply limits (not just when rolling) to prevent token overflow
+    // Calculate both limit cutoffs
     let messageLimitCutoff = 0  // Index to slice from (0 = no limit)
     let characterLimitCutoff = 0  // Index to slice from (0 = no limit)
 
@@ -207,28 +202,30 @@ export class ContextBuilder {
     const cutoff = Math.max(messageLimitCutoff, characterLimitCutoff)
 
     if (cutoff === 0) {
-      // No truncation needed
-      return { messages, didRoll: false }
+      // No truncation needed, but still roll if threshold met
+      return { messages, didRoll: shouldRoll }
     }
 
     const truncatedMessages = messages.slice(cutoff)
     const appliedLimit = characterLimitCutoff > messageLimitCutoff ? 'characters' : 'messages'
 
-    logger.debug(
+    logger.info(
       { 
         removed: cutoff,
         kept: truncatedMessages.length,
         appliedLimit,
         messageLimitCutoff,
         characterLimitCutoff,
-        originalCount: messages.length
+        originalCount: messages.length,
+        totalChars: messages.reduce((sum, m) => sum + m.content.length, 0),
+        keptChars: truncatedMessages.reduce((sum, m) => sum + m.content.length, 0)
       },
-      'Rolling context: truncated by ' + appliedLimit
+      shouldRoll ? 'Rolling context: truncated by ' + appliedLimit : 'Truncated by ' + appliedLimit + ' (not yet rolling)'
     )
 
     return {
       messages: truncatedMessages,
-      didRoll: true,
+      didRoll: shouldRoll,
     }
   }
 
