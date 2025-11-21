@@ -14,6 +14,7 @@ import { ContextBuilder } from './context/builder.js'
 import { LLMMiddleware } from './llm/middleware.js'
 import { AnthropicProvider } from './llm/providers/anthropic.js'
 import { ToolSystem } from './tools/system.js'
+import { ApiServer } from './api/server.js'
 import { logger } from './utils/logger.js'
 
 async function main() {
@@ -103,11 +104,29 @@ async function main() {
     // Set bot's Discord user ID for mention detection
     agentLoop.setBotUserId(botUserId)
 
+    // Start API server if configured
+    let apiServer: ApiServer | null = null
+    const apiPort = process.env.API_PORT ? parseInt(process.env.API_PORT) : 3000
+    const apiBearerToken = process.env.API_BEARER_TOKEN
+    
+    if (apiBearerToken) {
+      apiServer = new ApiServer(
+        { port: apiPort, bearerToken: apiBearerToken },
+        connector
+      )
+      await apiServer.start()
+    } else {
+      logger.info('API server disabled (no API_BEARER_TOKEN set)')
+    }
+
     // Handle shutdown
     const shutdown = async (signal: string) => {
       logger.info({ signal }, 'Shutting down')
 
       agentLoop.stop()
+      if (apiServer) {
+        await apiServer.stop()
+      }
       await connector.close()
       await toolSystem.close()
 

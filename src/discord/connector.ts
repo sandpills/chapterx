@@ -616,6 +616,10 @@ export class DiscordConnector {
         width: att.width || undefined,
         height: att.height || undefined,
       })),
+      reactions: Array.from(msg.reactions.cache.values()).map((reaction) => ({
+        emoji: reaction.emoji.name || reaction.emoji.toString(),
+        count: reaction.count,
+      })),
       mentions: Array.from(msg.mentions.users.keys()),
       referencedMessage: msg.reference?.messageId,
     }

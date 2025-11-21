@@ -254,6 +254,10 @@ export interface DiscordMessage {
   content: string
   timestamp: Date
   attachments: DiscordAttachment[]
+  reactions: Array<{
+    emoji: string
+    count: number
+  }>
   mentions: string[]  // User IDs
   referencedMessage?: string  // Reply to message ID
 }
