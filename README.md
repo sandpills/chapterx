@@ -36,9 +36,24 @@ export CONFIG_PATH=./config  # Default: ./config
 export TOOLS_PATH=./tools    # Default: ./tools
 export CACHE_PATH=./cache    # Default: ./cache
 export LOG_LEVEL=info        # Default: info
+
+# Optional: Enable REST API
+export API_BEARER_TOKEN=$(openssl rand -hex 32)  # Generate secure token
+export API_PORT=3000         # Default: 3000
 ```
 
 **Note:** The bot name is automatically determined from the Discord bot's username. Config is loaded from `config/bots/{discord-username}.yaml`.
+
+#### Optional: REST API
+
+To enable the REST API, set `API_BEARER_TOKEN`:
+
+```bash
+echo "your-secure-api-token" > api_token
+export API_BEARER_TOKEN=$(cat api_token)
+```
+
+The API will be available at `http://localhost:3000` (or your configured `API_PORT`).
 
 ### 3. Create Bot Configuration
 
@@ -196,6 +211,44 @@ npm test
 - TypeScript 5.3+
 - Discord bot token (in `discord_token` file)
 - LLM API keys (Anthropic, OpenAI, etc.) (in config files)
+
+## REST API
+
+If enabled with `API_BEARER_TOKEN`, the bot exposes a REST API for accessing Discord conversation history.
+
+### Endpoints
+
+#### `GET /health`
+Health check (no auth required)
+
+```bash
+curl http://localhost:3000/health
+```
+
+#### `POST /api/messages/export`
+Export Discord conversation history
+
+**Authentication:** Bearer token required
+
+**Request Body:**
+```json
+{
+  "last": "https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID",
+  "first": "https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID",
+  "recencyWindow": {
+    "messages": 400,
+    "characters": 100000
+  }
+}
+```
+
+**Example:**
+```bash
+curl -X POST http://localhost:3000/api/messages/export \
+  -H "Authorization: Bearer your-token-here" \
+  -H "Content-Type: application/json" \
+  -d '{"last": "https://discord.com/channels/123/456/789"}'
+```
 
 ## License
 
