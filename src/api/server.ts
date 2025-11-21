@@ -169,10 +169,14 @@ export class ApiServer {
   }
 
   private async exportMessages(request: MessageExportRequest): Promise<MessageExportResponse> {
+    logger.debug({ last: request.last, first: request.first }, 'Starting exportMessages')
+    
     // Parse URLs to extract IDs
     const channelId = this.extractChannelIdFromUrl(request.last)
     const guildId = this.extractGuildIdFromUrl(request.last)
     const lastMessageId = this.extractMessageIdFromUrl(request.last)
+    
+    logger.debug({ channelId, guildId, lastMessageId }, 'Parsed IDs from URL')
     
     if (!channelId || !guildId || !lastMessageId) {
       throw new Error('Invalid Discord message URL format')
@@ -180,23 +184,29 @@ export class ApiServer {
 
     // Fetch the specific range of messages using the connector's fetchHistoryRange
     // This properly respects the first/last boundaries
+    logger.debug('Fetching channel')
     const client = (this.connector as any).client
     const channel = await client.channels.fetch(channelId)
+    logger.debug({ channelType: channel?.type }, 'Channel fetched')
     
     if (!channel || !channel.isTextBased()) {
       throw new Error(`Channel ${channelId} not found or not text-based`)
     }
 
     // Use the connector's internal fetchHistoryRange method
+    logger.debug('Calling fetchHistoryRange')
     const rawMessages = await (this.connector as any).fetchHistoryRange(
       channel,
       request.first,  // Pass the full URL
       request.last    // Pass the full URL
     )
+    logger.debug({ rawMessageCount: rawMessages.length }, 'fetchHistoryRange complete')
 
     // Convert raw Discord messages to our format
+    logger.debug('Converting messages to DiscordMessage format')
     const messageMap = new Map(rawMessages.map((m: any) => [m.id, m]))
     let messages = rawMessages.map((msg: any) => (this.connector as any).convertMessage(msg, messageMap))
+    logger.debug({ convertedCount: messages.length }, 'Message conversion complete')
 
     // Track original count before applying recency window
     const messagesBeforeTruncation = messages.length

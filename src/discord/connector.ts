@@ -273,7 +273,11 @@ export class DiscordConnector {
     return { first, last }
   }
 
-  private async fetchHistoryRange(
+  /**
+   * Fetch a range of messages between first and last URLs
+   * Public for API access
+   */
+  async fetchHistoryRange(
     channel: TextChannel,
     firstUrl: string | undefined,
     lastUrl: string
@@ -569,7 +573,11 @@ export class DiscordConnector {
     })
   }
 
-  private convertMessage(msg: Message, messageMap?: Map<string, Message>): DiscordMessage {
+  /**
+   * Convert Discord.js Message to DiscordMessage format
+   * Public for API access
+   */
+  convertMessage(msg: Message, messageMap?: Map<string, Message>): DiscordMessage {
     // Replace user ID mentions with username mentions for bot consumption
     // Use actual username (not displayName/nick) to match chapter2 behavior
     let content = msg.content
