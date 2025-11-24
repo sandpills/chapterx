@@ -106,18 +106,44 @@ export class ApiServer {
         const body = req.body as MessageExportRequest
 
         if (!body.last) {
-          res.status(400).json({ error: 'Missing required parameter: last' })
+          res.status(400).json({ 
+            error: 'Bad Request',
+            message: 'Missing required parameter: last',
+            details: 'The "last" field must contain a Discord message URL'
+          })
           return
         }
 
         const result = await this.exportMessages(body)
         res.json(result)
       } catch (error: any) {
-        logger.error({ error }, 'API error in /api/messages/export')
-        res.status(500).json({ 
-          error: 'Internal server error',
-          message: error.message 
-        })
+        logger.error({ error, body: req.body }, 'API error in /api/messages/export')
+        
+        // Map known errors to appropriate status codes
+        if (error.message?.includes('Invalid Discord message URL')) {
+          res.status(400).json({ 
+            error: 'Bad Request',
+            message: error.message,
+            details: 'Expected format: https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID'
+          })
+        } else if (error.message?.includes('not found') || error.message?.includes('Unknown Message')) {
+          res.status(404).json({ 
+            error: 'Not Found',
+            message: error.message,
+            details: 'The bot cannot access this channel/message. Check bot permissions.'
+          })
+        } else if (error.message?.includes('not accessible') || error.message?.includes('Missing Access')) {
+          res.status(403).json({ 
+            error: 'Forbidden',
+            message: error.message,
+            details: 'The bot does not have permission to access this channel.'
+          })
+        } else {
+          res.status(500).json({ 
+            error: 'Internal Server Error',
+            message: error.message || 'An unexpected error occurred'
+          })
+        }
       }
     })
 
@@ -126,7 +152,10 @@ export class ApiServer {
       try {
         const userId = req.params.userId
         if (!userId) {
-          res.status(400).json({ error: 'Missing userId parameter' })
+          res.status(400).json({ 
+            error: 'Bad Request',
+            message: 'Missing userId parameter' 
+          })
           return
         }
 
@@ -134,11 +163,20 @@ export class ApiServer {
         const userInfo = await this.getUserInfo(userId, guildId)
         res.json(userInfo)
       } catch (error: any) {
-        logger.error({ error }, 'API error in /api/users/:userId')
-        res.status(500).json({ 
-          error: 'Internal server error',
-          message: error.message 
-        })
+        logger.error({ error, userId: req.params.userId }, 'API error in /api/users/:userId')
+        
+        if (error.message?.includes('not found') || error.message?.includes('Unknown User')) {
+          res.status(404).json({ 
+            error: 'Not Found',
+            message: `User ${req.params.userId} not found`,
+            details: 'The user may not exist or the bot cannot see them.'
+          })
+        } else {
+          res.status(500).json({ 
+            error: 'Internal Server Error',
+            message: error.message || 'Failed to fetch user info'
+          })
+        }
       }
     })
 
@@ -147,7 +185,10 @@ export class ApiServer {
       try {
         const userId = req.params.userId
         if (!userId) {
-          res.status(400).json({ error: 'Missing userId parameter' })
+          res.status(400).json({ 
+            error: 'Bad Request',
+            message: 'Missing userId parameter' 
+          })
           return
         }
 
@@ -155,17 +196,28 @@ export class ApiServer {
         const avatarUrl = await this.getUserAvatar(userId, size)
         
         if (!avatarUrl) {
-          res.status(404).json({ error: 'Avatar not found' })
+          res.status(404).json({ 
+            error: 'Not Found',
+            message: `User ${userId} not found or has no avatar`
+          })
           return
         }
 
         res.json({ avatarUrl })
       } catch (error: any) {
-        logger.error({ error }, 'API error in /api/users/:userId/avatar')
-        res.status(500).json({ 
-          error: 'Internal server error',
-          message: error.message 
-        })
+        logger.error({ error, userId: req.params.userId }, 'API error in /api/users/:userId/avatar')
+        
+        if (error.message?.includes('Unknown User')) {
+          res.status(404).json({ 
+            error: 'Not Found',
+            message: error.message
+          })
+        } else {
+          res.status(500).json({ 
+            error: 'Internal Server Error',
+            message: error.message || 'Failed to fetch user avatar'
+          })
+        }
       }
     })
   }
@@ -177,44 +229,68 @@ export class ApiServer {
     const channelId = this.extractChannelIdFromUrl(request.last)
     const guildId = this.extractGuildIdFromUrl(request.last)
     const lastMessageId = this.extractMessageIdFromUrl(request.last)
+    const firstMessageId = request.first ? (this.extractMessageIdFromUrl(request.first) || undefined) : undefined
     
-    logger.debug({ channelId, guildId, lastMessageId }, 'Parsed IDs from URL')
+    logger.debug({ channelId, guildId, lastMessageId, firstMessageId }, 'Parsed IDs from URL')
     
     if (!channelId || !guildId || !lastMessageId) {
       throw new Error('Invalid Discord message URL format')
     }
 
-    // Fetch the specific range of messages using the connector's fetchHistoryRange
-    // This properly respects the first/last boundaries
-    logger.debug('Fetching channel')
-    const client = (this.connector as any).client
-    const channel = await client.channels.fetch(channelId)
-    logger.debug({ channelType: channel?.type }, 'Channel fetched')
-    
-    if (!channel || !channel.isTextBased()) {
-      throw new Error(`Channel ${channelId} not found or not text-based`)
-    }
-
     // Determine recency window (default: 50 messages)
     const recencyWindow = request.recencyWindow || { messages: 50 }
+    const maxFetch = recencyWindow.messages ? recencyWindow.messages + 100 : 1000
 
-    // Use the connector's internal fetchHistoryRange method
-    // Limit fetch to recency window + buffer to avoid over-fetching
-    logger.debug('Calling fetchHistoryRange')
-    const maxFetch = recencyWindow.messages ? recencyWindow.messages + 50 : 1000
-    const rawMessages = await this.connector.fetchHistoryRange(
-      channel,
-      request.first,  // Pass the full URL
-      request.last,   // Pass the full URL
-      maxFetch        // Pass limit
-    )
-    logger.debug({ rawMessageCount: rawMessages.length }, 'fetchHistoryRange complete')
+    // Use connector.fetchContext() which automatically:
+    // - Recursively handles .history commands during traversal
+    // - Downloads and caches images
+    // - Converts to DiscordMessage format
+    logger.debug({ channelId, targetMessageId: lastMessageId, firstMessageId, depth: maxFetch }, 'Calling fetchContext')
+    let context
+    try {
+      context = await this.connector.fetchContext({
+        channelId,
+        depth: maxFetch,
+        targetMessageId: lastMessageId,  // Start from the 'last' URL
+        firstMessageId,  // Stop at 'first' URL if provided
+      })
+    } catch (error: any) {
+      if (error.code === 50001) {
+        throw new Error(`Missing Access: Bot does not have permission to view channel ${channelId}`)
+      } else if (error.code === 10003) {
+        throw new Error(`Channel ${channelId} not found or bot is not a member of this guild`)
+      } else if (error.code === 10008) {
+        throw new Error(`Unknown Message: Message not found in channel ${channelId}`)
+      }
+      throw new Error(`Failed to fetch messages: ${error.message}`)
+    }
+    
+    let messages = context.messages
+    const imageCache = new Map(context.images.map(img => [img.url, img]))
+    
+    logger.debug({ 
+      fetchedMessages: messages.length, 
+      cachedImages: imageCache.size 
+    }, 'fetchContext complete (with .history processing)')
 
-    // Convert raw Discord messages to our format
-    logger.debug('Converting messages to DiscordMessage format')
-    const messageMap = new Map(rawMessages.map((m: any) => [m.id, m]))
-    let messages = rawMessages.map((msg: any) => this.connector.convertMessage(msg, messageMap))
-    logger.debug({ convertedCount: messages.length }, 'Message conversion complete')
+    if (messages.length === 0) {
+      throw new Error(`No messages found in channel ${channelId}. The bot may lack access.`)
+    }
+
+    // Trim to 'first' message if specified (works across channels after .history traversal)
+    if (firstMessageId) {
+      const firstIndex = messages.findIndex(m => m.id === firstMessageId)
+      if (firstIndex >= 0) {
+        messages = messages.slice(firstIndex)
+        logger.debug({ 
+          trimmedFrom: firstIndex, 
+          remaining: messages.length,
+          firstMessageId 
+        }, 'Trimmed to first message boundary')
+      } else {
+        logger.warn({ firstMessageId, totalMessages: messages.length }, 'First message not found in fetched range')
+      }
+    }
 
     // Track original count before applying recency window
     const messagesBeforeTruncation = messages.length
@@ -225,11 +301,6 @@ export class ApiServer {
     if (messages.length < messagesBeforeTruncation) {
       logger.debug({ beforeTruncate: messagesBeforeTruncation, afterTruncate: messages.length }, 'Applied recency window')
     }
-
-    // Download and cache images from attachments
-    logger.debug('Downloading images')
-    const imageCache = await this.downloadImages(rawMessages)
-    logger.debug({ cachedImages: imageCache.size }, 'Image download complete')
 
     // Transform to export format (from DiscordMessage to API format)
     const exportedMessages = messages.map((msg: any) => ({
@@ -275,45 +346,22 @@ export class ApiServer {
     }
   }
 
-  private async downloadImages(messages: any[]): Promise<Map<string, any>> {
-    const imageCache = new Map<string, any>()
-    
-    // Collect all image URLs
-    const imageUrls: Array<{url: string, contentType: string}> = []
-    for (const msg of messages) {
-      const attachments = Array.from(msg.attachments.values())
-      for (const att of attachments) {
-        const attachment = att as any
-        if (attachment.contentType?.startsWith('image/')) {
-          imageUrls.push({ url: attachment.url, contentType: attachment.contentType })
-        }
-      }
-    }
-    
-    logger.debug({ imageCount: imageUrls.length }, 'Found images to download')
-    
-    // Download images using connector's cache method
-    for (const {url, contentType} of imageUrls) {
-      try {
-        const cached = await (this.connector as any).cacheImage(url, contentType)
-        if (cached) {
-          imageCache.set(url, cached)
-        }
-      } catch (error) {
-        logger.warn({ error, url }, 'Failed to cache image for API export')
-      }
-    }
-    
-    return imageCache
-  }
-
   private async getUserInfo(userId: string, guildId?: string): Promise<any> {
     const client = (this.connector as any).client
     
     // Fetch user from Discord
-    const user = await client.users.fetch(userId)
+    let user
+    try {
+      user = await client.users.fetch(userId)
+    } catch (error: any) {
+      if (error.code === 10013) {
+        throw new Error(`Unknown User: User ${userId} not found`)
+      }
+      throw new Error(`Failed to fetch user: ${error.message}`)
+    }
+    
     if (!user) {
-      throw new Error('User not found')
+      throw new Error(`Unknown User: User ${userId} not found`)
     }
 
     // Get guild-specific info if guildId provided
@@ -326,8 +374,15 @@ export class ApiServer {
         const member = await guild.members.fetch(userId)
         displayName = member.displayName || user.username
         roles = member.roles.cache.map((r: any) => r.name).filter((n: string) => n !== '@everyone')
-      } catch (error) {
+      } catch (error: any) {
         logger.warn({ error, userId, guildId }, 'Failed to fetch guild member info')
+        if (error.code === 10004) {
+          throw new Error(`Guild ${guildId} not found or bot is not a member`)
+        } else if (error.code === 10007) {
+          throw new Error(`User ${userId} is not a member of guild ${guildId}`)
+        }
+        // Don't throw for guild fetch failures - just use global info
+        logger.warn({ error, userId, guildId }, 'Using global user info instead of guild-specific')
       }
     }
 
@@ -347,12 +402,17 @@ export class ApiServer {
     
     try {
       const user = await client.users.fetch(userId)
-      if (!user) return null
+      if (!user) {
+        throw new Error(`Unknown User: User ${userId} not found`)
+      }
 
       return user.displayAvatarURL({ size, extension: 'png' })
-    } catch (error) {
+    } catch (error: any) {
+      if (error.code === 10013) {
+        throw new Error(`Unknown User: User ${userId} not found`)
+      }
       logger.warn({ error, userId }, 'Failed to fetch user avatar')
-      return null
+      throw error
     }
   }
 

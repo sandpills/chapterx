@@ -26,6 +26,8 @@ export interface ConnectorOptions {
 export interface FetchContextParams {
   channelId: string
   depth: number  // Max messages
+  targetMessageId?: string  // Optional: Fetch backward from this message ID (for API range queries)
+  firstMessageId?: string  // Optional: Stop when this message is encountered
   authorized_roles?: string[]
 }
 
@@ -86,7 +88,7 @@ export class DiscordConnector {
    * Fetch context from Discord (messages, configs, images)
    */
   async fetchContext(params: FetchContextParams): Promise<DiscordContext> {
-    const { channelId, depth, authorized_roles } = params
+    const { channelId, depth, targetMessageId, firstMessageId, authorized_roles } = params
 
     return retryDiscord(async () => {
       const channel = await this.client.channels.fetch(channelId) as TextChannel
@@ -95,112 +97,55 @@ export class DiscordConnector {
         throw new DiscordError(`Channel ${channelId} not found or not text-based`)
       }
 
-      // Fetch messages (in batches if depth > 100)
-      let messages: Message[] = []
-      let remainingToFetch = depth
-      let beforeId: string | undefined
+      // Use recursive fetch with automatic .history processing
+      // Note: Don't pass firstMessageId to recursive call - each .history has its own boundaries
+      // We'll trim to firstMessageId after all recursion completes
+      logger.debug({ 
+        channelId: channel.id, 
+        targetMessageId, 
+        depth 
+      }, 'ABOUT TO CALL fetchMessagesRecursive')
       
-      while (remainingToFetch > 0 && messages.length < depth) {
-        const batchSize = Math.min(remainingToFetch, 100)
-        const fetchOptions: any = { limit: batchSize }
-        if (beforeId) {
-          fetchOptions.before = beforeId
-        }
-        
-        const fetchedCollection = await channel.messages.fetch(fetchOptions) as any
-        if (!fetchedCollection || fetchedCollection.size === 0) break
-        
-        // Discord returns newest-first, reverse to get chronological order
-        const batchMessages = Array.from(fetchedCollection.values()).reverse()
-        
-        // PREPEND older messages (we're fetching backwards in time)
-        messages.unshift(...(batchMessages as Message[]))
-        
-        beforeId = (batchMessages[0] as any)?.id  // Oldest in this batch
-        if (!beforeId) break
-        
-        remainingToFetch -= fetchedCollection.size
-      }
+      let messages = await this.fetchMessagesRecursive(
+        channel,
+        targetMessageId,
+        undefined,  // Let .history commands define their own boundaries
+        depth,
+        authorized_roles
+      )
       
-      logger.debug({ requested: depth, fetched: messages.length }, 'Fetched messages from channel')
-
-      // Check for .history commands (only in most recent 10 messages)
-      const recentMessages = messages.slice(-10)
-      const historyCommands = recentMessages.filter((msg) => msg.content.startsWith('.history'))
-      
-      if (historyCommands.length > 0) {
-        // Process history commands (most recent takes precedence)
-        const historyCmd = historyCommands[historyCommands.length - 1]!
-        const historyCmdIndex = messages.findIndex(m => m.id === historyCmd.id)
+      // Now trim to firstMessageId if provided (works across all channels after .history)
+      if (firstMessageId) {
+        logger.debug({
+          beforeTrim: messages.length,
+          allIds: messages.map(m => m.id),
+          lookingFor: firstMessageId
+        }, 'About to trim to first boundary')
         
-        // Messages after the .history command (current conversation)
-        const messagesAfterHistory = historyCmdIndex >= 0 
-          ? messages.slice(historyCmdIndex + 1)  // Everything after .history
-          : []
-        
-        // Check authorization if roles are specified
-        let authorized = true
-        if (authorized_roles && authorized_roles.length > 0) {
-          const member = historyCmd.member
-          if (member) {
-            const memberRoles = member.roles.cache.map(r => r.name)
-            authorized = authorized_roles.some(role => memberRoles.includes(role))
-          } else {
-            authorized = false
-          }
-          
-          if (!authorized) {
-            logger.warn(
-              { 
-                userId: historyCmd.author.id, 
-                username: historyCmd.author.username,
-                requiredRoles: authorized_roles
-              }, 
-              'User not authorized for .history command'
-            )
-          }
-        }
-        
-        if (authorized) {
-          const historyRange = this.parseHistoryCommand(historyCmd.content)
-          
-          if (historyRange === null) {
-            // Empty history command (no body) - clear history, keep messages after
-            logger.debug({ messagesAfter: messagesAfterHistory.length }, 'Clearing history (empty .history command)')
-            messages = messagesAfterHistory
-          } else if (historyRange) {
-            logger.debug({ historyRange, messagesAfter: messagesAfterHistory.length }, 'Processing .history command')
-            
-            // Parse channel ID from URL (history might point to different channel)
-            const targetChannelId = this.extractChannelIdFromUrl(historyRange.last)
-            const targetChannel = targetChannelId 
-              ? await this.client.channels.fetch(targetChannelId) as TextChannel
-              : channel
-            
-            if (!targetChannel || !targetChannel.isTextBased()) {
-              logger.warn({ targetChannelId }, 'Target channel for .history not found')
-              messages = messagesAfterHistory  // Keep messages after on error
-            } else {
-              // Fetch messages from history range
-              const historyMessages = await this.fetchHistoryRange(
-                targetChannel,
-                historyRange.first,
-                historyRange.last
-              )
-              
-              logger.debug({ 
-                historyMessages: historyMessages.length,
-                messagesAfter: messagesAfterHistory.length
-              }, 'Combining history with messages after')
-              
-              // Combine: history + messages after .history command
-              messages = [...historyMessages, ...messagesAfterHistory] as Message<true>[]
-              
-              logger.debug({ totalMessages: messages.length }, 'Final message count after history processing')
-            }
-          }
+        const firstIndex = messages.findIndex(m => m.id === firstMessageId)
+        if (firstIndex >= 0) {
+          messages = messages.slice(firstIndex)
+          logger.debug({ 
+            trimmedFrom: firstIndex, 
+            remaining: messages.length,
+            firstMessageId,
+            foundMessageId: messages[firstIndex]?.id,
+            resultIds: messages.map(m => m.id)
+          }, 'Trimmed to API first boundary')
+        } else {
+          // Debug: log first and last few message IDs to see what we got
+          const messageIds = messages.map(m => m.id)
+          logger.warn({ 
+            firstMessageId, 
+            totalMessages: messages.length,
+            firstFewIds: messageIds.slice(0, 5),
+            lastFewIds: messageIds.slice(-5),
+            allIds: messageIds.length <= 20 ? messageIds : undefined
+          }, 'API first message not found in results')
         }
       }
+      
+      logger.debug({ finalMessageCount: messages.length }, 'Recursive fetch complete with .history processing')
 
       // Convert to our format (with reply username lookup)
       const messageMap = new Map(messages.map(m => [m.id, m]))
@@ -271,6 +216,220 @@ export class DiscordConnector {
     }
 
     return { first, last }
+  }
+
+  /**
+   * Recursively fetch messages with .history support
+   * Private helper for fetchContext
+   */
+  private async fetchMessagesRecursive(
+    channel: TextChannel,
+    startFromId: string | undefined,
+    stopAtId: string | undefined,
+    maxMessages: number,
+    authorizedRoles?: string[]
+  ): Promise<Message[]> {
+    const results: Message[] = []
+    let currentBefore = startFromId
+    const batchSize = 100
+    let foundHistory = false  // Track if we found .history in current recursion level
+
+    logger.debug({ 
+      channelId: channel.id, 
+      channelName: channel.name,
+      startFromId, 
+      stopAtId, 
+      maxMessages,
+      resultsLength: results.length,
+      willEnterLoop: results.length < maxMessages
+    }, 'Starting recursive fetch')
+
+    let isFirstBatch = true  // Track if this is the first batch
+    
+    while (results.length < maxMessages && !foundHistory) {
+      // Fetch a batch
+      const fetchOptions: any = { limit: Math.min(batchSize, maxMessages - results.length) }
+      if (currentBefore) {
+        fetchOptions.before = currentBefore
+      }
+
+      logger.debug({ 
+        iteration: 'starting', 
+        fetchOptions, 
+        resultsLength: results.length,
+        maxMessages,
+        isFirstBatch
+      }, 'Fetching batch in while loop')
+
+      const fetched = await channel.messages.fetch(fetchOptions) as any
+      
+      logger.debug({ fetchedSize: fetched?.size || 0 }, 'Batch fetched')
+      
+      if (!fetched || fetched.size === 0) {
+        logger.debug('No more messages to fetch')
+        break
+      }
+
+      const batchMessages = Array.from(fetched.values()).reverse()
+      logger.debug({ batchSize: batchMessages.length }, 'Processing batch messages')
+
+      // Collect messages from this batch (will prepend entire batch to results later)
+      const batchResults: Message[] = []
+      
+      // For first batch, include the startFromId message at the end (it's newest)
+      if (isFirstBatch && startFromId) {
+        try {
+          const startMsg = await channel.messages.fetch(startFromId)
+          batchMessages.push(startMsg)  // Add to end of chronological batch
+          logger.debug({ startFromId }, 'Added startFrom message to first batch')
+        } catch (error) {
+          logger.warn({ error, startFromId }, 'Failed to fetch startFrom message')
+        }
+        isFirstBatch = false
+      }
+
+      // Process each message in batch
+      for (const msg of batchMessages) {
+        const message = msg as any
+
+        logger.debug({ 
+          messageId: message.id, 
+          contentStart: message.content?.substring(0, 30),
+          isHistory: message.content?.startsWith('.history')
+        }, 'Processing message in recursive fetch')
+
+        // Check if we hit the stop point
+        if (stopAtId && message.id === stopAtId) {
+          batchResults.push(message)
+          results.unshift(...batchResults)  // Prepend this batch
+          logger.debug({ stopAtId, batchSize: batchResults.length }, 'Reached first message boundary, stopping')
+          return results
+        }
+
+        // Check for .history command
+        if (message.content?.startsWith('.history')) {
+          logger.debug({ messageId: message.id, content: message.content }, 'Found .history command during traversal')
+
+          // Check authorization
+          let authorized = true
+          if (authorizedRoles && authorizedRoles.length > 0) {
+            const member = message.member
+            if (member) {
+              const memberRoles = member.roles.cache.map((r: any) => r.name)
+              authorized = authorizedRoles.some((role: string) => memberRoles.includes(role))
+            } else {
+              authorized = false
+            }
+          }
+
+          if (authorized) {
+            const historyRange = this.parseHistoryCommand(message.content)
+            
+            logger.debug({ 
+              historyRange,
+              messageId: message.id,
+              fullContent: message.content
+            }, 'Parsed .history command')
+
+            if (historyRange === null) {
+              // Empty .history - clear history, continue with messages after
+              logger.debug('Empty .history command - clearing prior history')
+              return results
+            } else if (historyRange) {
+              // Recursively fetch from history target
+              const targetChannelId = this.extractChannelIdFromUrl(historyRange.last)
+              const targetChannel = targetChannelId
+                ? await this.client.channels.fetch(targetChannelId) as TextChannel
+                : channel
+
+              if (targetChannel && targetChannel.isTextBased()) {
+                const histLastId = this.extractMessageIdFromUrl(historyRange.last) || undefined
+                const histFirstId = historyRange.first ? (this.extractMessageIdFromUrl(historyRange.first) || undefined) : undefined
+
+                logger.debug({ 
+                  historyTarget: historyRange.last,
+                  targetChannelId,
+                  histLastId,
+                  histFirstId,
+                  remaining: maxMessages - results.length
+                }, 'Recursively fetching .history target')
+
+                // RECURSIVE CALL - fetch from .history's boundaries
+                const historicalMessages = await this.fetchMessagesRecursive(
+                  targetChannel,
+                  histLastId,      // End point (include this message and older)
+                  histFirstId,     // Start point (stop when reached, or undefined)
+                  maxMessages - results.length - batchResults.length,  // Account for current batch
+                  authorizedRoles
+                )
+
+                logger.debug({ 
+                  historicalCount: historicalMessages.length,
+                  batchSoFar: batchResults.length,
+                  remainingInBatch: batchMessages.length - batchMessages.indexOf(msg) - 1,
+                  currentResultsCount: results.length
+                }, 'Fetched historical messages, will collect rest of batch then combine')
+
+                // Mark that we found .history (stop after this batch)
+                foundHistory = true
+                
+                // Prepend historical messages to results (they're older)
+                results.unshift(...historicalMessages)
+                
+                // IMPORTANT: Clear batchResults - we don't want messages BEFORE .history
+                // Only keep messages AFTER .history in the current channel
+                batchResults.length = 0
+                logger.debug({ clearedBatch: true }, 'Cleared batch before .history, will only keep messages after it')
+                
+                // Don't add the .history message itself
+                // Continue collecting remaining messages in batch (after .history)
+                continue
+              }
+            }
+          }
+
+          // This should never be reached if .history was processed above
+          // Skip the .history command itself if somehow we get here
+          logger.warn({ messageId: message.id }, 'Unexpected: reached .history skip without processing')
+          continue
+        }
+
+        // Regular message - add to batch
+        batchResults.push(message)
+      }
+
+      // After processing all messages in batch
+      if (foundHistory) {
+        // This batch has messages AFTER .history - append them (they're newer than historical)
+        results.push(...batchResults)
+        logger.debug({ 
+          batchAdded: batchResults.length, 
+          totalNow: results.length 
+        }, 'Appended batch after .history to results')
+        break  // Stop fetching older batches
+      } else {
+        // Regular batch - prepend (older messages go before)
+        results.unshift(...batchResults)
+        logger.debug({ 
+          batchAdded: batchResults.length, 
+          totalNow: results.length 
+        }, 'Prepended batch to results')
+      }
+
+      // Check if we've collected enough
+      if (results.length >= maxMessages) {
+        logger.debug({ finalCount: results.length }, 'Reached max messages after batch')
+        break
+      }
+
+      // Move to next batch (oldest message in current batch)
+      const oldestMsg = batchMessages[0] as any
+      if (!oldestMsg) break
+      currentBefore = oldestMsg.id
+    }
+
+    logger.debug({ finalCount: results.length }, 'Recursive fetch complete')
+    return results
   }
 
   /**
