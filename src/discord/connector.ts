@@ -103,7 +103,8 @@ export class DiscordConnector {
       logger.debug({ 
         channelId: channel.id, 
         targetMessageId, 
-        depth 
+        depth,
+        isThread: channel.isThread()
       }, 'ABOUT TO CALL fetchMessagesRecursive')
       
       let messages = await this.fetchMessagesRecursive(
@@ -113,6 +114,41 @@ export class DiscordConnector {
         depth,
         authorized_roles
       )
+      
+      // For threads: implicitly fetch parent channel context up to the branching point
+      // This happens even without an explicit .history message
+      if (channel.isThread()) {
+        const thread = channel as any  // Discord.js ThreadChannel
+        const parentChannel = thread.parent as TextChannel
+        const threadStartMessageId = thread.id  // Thread ID is the same as the message ID that started it
+        
+        if (parentChannel && parentChannel.isTextBased()) {
+          logger.debug({
+            threadId: thread.id,
+            parentChannelId: parentChannel.id,
+            threadStartMessageId,
+            currentMessageCount: messages.length,
+            remainingDepth: depth - messages.length
+          }, 'Thread detected, fetching parent channel context')
+          
+          // Fetch from parent channel up to (and including) the thread's starting message
+          const parentMessages = await this.fetchMessagesRecursive(
+            parentChannel,
+            threadStartMessageId,  // End at the message that started the thread
+            undefined,
+            Math.max(0, depth - messages.length),  // Remaining message budget
+            authorized_roles
+          )
+          
+          logger.debug({
+            parentMessageCount: parentMessages.length,
+            threadMessageCount: messages.length
+          }, 'Fetched parent context for thread')
+          
+          // Prepend parent messages (they're older than thread messages)
+          messages = [...parentMessages, ...messages]
+        }
+      }
       
       // Now trim to firstMessageId if provided (works across all channels after .history)
       if (firstMessageId) {
@@ -535,6 +571,51 @@ export class DiscordConnector {
   }
 
   /**
+   * Resolve <@username> mentions to <@USER_ID> format for Discord
+   * This reverses the conversion done in convertMessage
+   */
+  private async resolveMentions(content: string, channelId: string): Promise<string> {
+    // Find all <@username> patterns (not already numeric IDs)
+    const mentionPattern = /<@([^>0-9][^>]*)>/g
+    const matches = [...content.matchAll(mentionPattern)]
+    
+    if (matches.length === 0) {
+      return content
+    }
+
+    // Get the guild for user lookups
+    const channel = await this.client.channels.fetch(channelId) as TextChannel
+    if (!channel?.guild) {
+      return content
+    }
+
+    let result = content
+    for (const match of matches) {
+      const username = match[1]
+      if (!username) continue
+
+      // Try to find user by username in guild members
+      try {
+        // Search guild members (fetches if not cached)
+        const members = await channel.guild.members.fetch({ query: username, limit: 5 })
+        const member = members.find(m => 
+          m.user.username.toLowerCase() === username.toLowerCase() ||
+          m.displayName.toLowerCase() === username.toLowerCase()
+        )
+        
+        if (member) {
+          result = result.replace(match[0], `<@${member.user.id}>`)
+          logger.debug({ username, userId: member.user.id }, 'Resolved mention to user ID')
+        }
+      } catch (error) {
+        logger.debug({ username, error }, 'Failed to resolve mention')
+      }
+    }
+
+    return result
+  }
+
+  /**
    * Send a message to a channel (auto-splits if > 1800 chars)
    * Returns array of message IDs
    */
@@ -546,8 +627,11 @@ export class DiscordConnector {
         throw new DiscordError(`Channel ${channelId} not found`)
       }
 
+      // Resolve <@username> mentions to <@USER_ID> format
+      const resolvedContent = await this.resolveMentions(content, channelId)
+
       // Split message if too long
-      const chunks = this.splitMessage(content, 1800)
+      const chunks = this.splitMessage(resolvedContent, 1800)
       const messageIds: string[] = []
 
       for (let i = 0; i < chunks.length; i++) {
@@ -598,8 +682,11 @@ export class DiscordConnector {
         throw new DiscordError(`Channel ${channelId} not found`)
       }
 
+      // Resolve <@username> mentions to <@USER_ID> format
+      const resolvedContent = await this.resolveMentions(content, channelId)
+
       const options: any = {
-        content,
+        content: resolvedContent,
         files: [{
           name: attachment.name,
           attachment: Buffer.from(attachment.content, 'utf-8'),
@@ -640,16 +727,16 @@ export class DiscordConnector {
     return retryDiscord(async () => {
       const channel = await this.client.channels.fetch(channelId) as TextChannel
 
-      if (!channel || !channel.isTextBased() || !('createWebhook' in channel)) {
-        logger.warn({ channelId }, 'Channel does not support webhooks')
-        // Fall back to regular message
+      // Threads don't support webhooks directly - fall back to regular messages
+      if (!channel || !channel.isTextBased() || channel.isThread()) {
+        logger.debug({ channelId, isThread: channel?.isThread?.() }, 'Channel does not support webhooks, using regular message')
         await this.sendMessage(channelId, content)
         return
       }
 
       try {
         // Get or create webhook for this channel
-        const webhooks = await channel.fetchWebhooks()
+        const webhooks = await (channel as any).fetchWebhooks()
         let webhook = webhooks.find((wh) => wh.name === 'Chapter3-Tools')
 
         if (!webhook) {

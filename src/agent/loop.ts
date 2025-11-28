@@ -377,8 +377,13 @@ export class AgentLoop {
         return true
       }
 
-      // 3. Check for reply to bot's message
+      // 3. Check for reply to bot's message (but ignore replies from other bots without mention)
       if (message.reference?.messageId && this.botMessageIds.has(message.reference.messageId)) {
+        // If the replying user is a bot, only activate if they explicitly mentioned us
+        if (message.author?.bot) {
+          logger.debug({ messageId: message.id, author: message.author?.username }, 'Ignoring bot reply without mention')
+          continue
+        }
         logger.debug({ messageId: message.id }, 'Activated by reply')
         return true
       }
