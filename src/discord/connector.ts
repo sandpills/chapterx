@@ -164,11 +164,11 @@ export class DiscordConnector {
       
       for (const msg of messages) {
         const attachments = Array.from(msg.attachments.values())
-        logger.debug({ 
+        /*logger.debug({ 
           messageId: msg.id, 
           attachmentCount: attachments.length,
           types: attachments.map(a => a.contentType)
-        }, 'Message attachments')
+        }, 'Message attachments')*/
         
         for (const attachment of attachments) {
           if (attachment.contentType?.startsWith('image/')) {
@@ -295,11 +295,11 @@ export class DiscordConnector {
       for (const msg of batchMessages) {
         const message = msg as any
 
-        logger.debug({ 
+        /*logger.debug({ 
           messageId: message.id, 
           contentStart: message.content?.substring(0, 30),
           isHistory: message.content?.startsWith('.history')
-        }, 'Processing message in recursive fetch')
+        }, 'Processing message in recursive fetch')*/
 
         // Check if we hit the stop point
         if (stopAtId && message.id === stopAtId) {
@@ -830,11 +830,11 @@ export class DiscordConnector {
       if (referencedMsg) {
         const replyToName = referencedMsg.author.username
         content = `<reply:@${replyToName}> ${content}`
-        logger.debug({ 
+        /*logger.debug({ 
           messageId: msg.id, 
           replyToId: msg.reference.messageId,
           replyToName 
-        }, 'Added reply prefix to message')
+        }, 'Added reply prefix to message')*/
       } else {
         content = `<reply:@someone> ${content}`
         logger.debug({ messageId: msg.id, replyToId: msg.reference.messageId }, 'Reply target not found in message map')

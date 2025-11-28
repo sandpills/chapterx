@@ -55,7 +55,7 @@ export class ContextBuilder {
 
     // Track which messages were merged (for tracing)
     const mergedMessageIds = new Set<string>()
-    
+
     // 1. Merge consecutive bot messages
     const beforeMerge = messages.length
     messages = this.mergeConsecutiveBotMessages(messages, config.innerName)

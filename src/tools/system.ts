@@ -136,6 +136,13 @@ export class ToolSystem {
   }
 
   /**
+   * Get names of all available tools
+   */
+  getToolNames(): string[] {
+    return this.tools.map(t => t.name)
+  }
+
+  /**
    * Load tool cache from JSONL files (with results)
    * @param existingMessageIds - Optional set of Discord message IDs that exist. 
    *                            Entries with botMessageIds not in this set are filtered out.

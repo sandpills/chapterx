@@ -758,7 +758,43 @@ export class AgentLoop {
     let allPreambleMessageIds: string[] = []
 
     while (depth < config.max_tool_depth) {
-      const completion = await this.llmMiddleware.complete(currentRequest)
+      let completion = await this.llmMiddleware.complete(currentRequest)
+
+      // Handle stop sequence mid-XML-block: continue the completion
+      // This can happen when participant names appear inside tool call arguments or thinking blocks
+      if (completion.stopReason === 'stop_sequence' && config.mode === 'prefill') {
+        const completionText = completion.content
+          .filter((c: any) => c.type === 'text')
+          .map((c: any) => c.text)
+          .join('')
+        
+        // Check if there's an unclosed XML tag (tool call or thinking)
+        // When prefill_thinking is enabled, the <thinking> tag was prefilled and won't be in the completion
+        // So we need to check if we're still inside a thinking block (no </thinking> found)
+        let unclosedTag = this.detectUnclosedXmlTag(completionText)
+        if (!unclosedTag && config.prefill_thinking && !completionText.includes('</thinking>')) {
+          unclosedTag = 'thinking'  // Prefilled thinking tag is still open
+        }
+        
+        if (unclosedTag) {
+          const triggeredStopSequence = completion.raw?.stop_sequence
+          logger.warn({ 
+            unclosedTag, 
+            triggeredStopSequence,
+            textLength: completionText.length 
+          }, 'Stop sequence fired mid-XML-block, continuing completion')
+          
+          if (triggeredStopSequence) {
+            // Continue the completion: append stop sequence and call again
+            completion = await this.continueCompletionAfterStopSequence(
+              currentRequest,
+              completion,
+              triggeredStopSequence,
+              config
+            )
+          }
+        }
+      }
 
       // If prefill_thinking was enabled, prepend <thinking> to the first text block
       // (the prefilled <thinking> isn't in the completion, only the content and </thinking>)
@@ -943,13 +979,137 @@ export class AgentLoop {
     logger.warn('Reached max tool depth')
     return { 
       completion: {
-        content: [{ type: 'text', text: '[Max tool depth reached]' }], 
-        stopReason: 'end_turn' as const,
-        usage: { inputTokens: 0, outputTokens: 0 }, 
-        model: '' 
+      content: [{ type: 'text', text: '[Max tool depth reached]' }], 
+      stopReason: 'end_turn' as const,
+      usage: { inputTokens: 0, outputTokens: 0 }, 
+      model: '' 
       },
       toolCallIds: allToolCallIds,
       preambleMessageIds: allPreambleMessageIds
+    }
+  }
+
+  /**
+   * Detect if there's an unclosed XML tag in the completion text.
+   * Checks for tool calls and thinking blocks.
+   * Returns the tag name if found, null otherwise.
+   */
+  private detectUnclosedXmlTag(text: string): string | null {
+    // Check for unclosed thinking tag first
+    const thinkingOpen = text.lastIndexOf('<thinking>')
+    const thinkingClose = text.lastIndexOf('</thinking>')
+    if (thinkingOpen !== -1 && thinkingOpen > thinkingClose) {
+      return 'thinking'
+    }
+    
+    // Check for unclosed tool call tags
+    const toolNames = this.toolSystem.getToolNames()
+    
+    for (const toolName of toolNames) {
+      const openTag = `<${toolName}>`
+      const closeTag = `</${toolName}>`
+      
+      const lastOpenIndex = text.lastIndexOf(openTag)
+      const lastCloseIndex = text.lastIndexOf(closeTag)
+      
+      // If there's an open tag after the last close tag (or no close tag), it's unclosed
+      if (lastOpenIndex !== -1 && lastOpenIndex > lastCloseIndex) {
+        return toolName
+      }
+    }
+    
+    return null
+  }
+
+  /**
+   * Continue a completion that was interrupted by a stop sequence mid-tool-call.
+   * Appends the stop sequence to the partial completion and continues.
+   */
+  private async continueCompletionAfterStopSequence(
+    originalRequest: any,
+    partialCompletion: any,
+    stopSequence: string,
+    config: BotConfig,
+    maxContinuations: number = 5
+  ): Promise<any> {
+    let accumulatedText = partialCompletion.content
+      .filter((c: any) => c.type === 'text')
+      .map((c: any) => c.text)
+      .join('')
+    
+    let continuationCount = 0
+    let lastCompletion = partialCompletion
+    
+    while (continuationCount < maxContinuations) {
+      // Append the stop sequence that was triggered
+      accumulatedText += stopSequence
+      
+      // Create a continuation request with accumulated text as prefill
+      const continuationRequest = { ...originalRequest }
+      
+      // Find and update the last assistant message (the prefill)
+      const lastMessage = continuationRequest.messages[continuationRequest.messages.length - 1]
+      if (lastMessage?.participant === config.innerName) {
+        // Append to existing prefill
+        const existingText = lastMessage.content
+          .filter((c: any) => c.type === 'text')
+          .map((c: any) => c.text)
+          .join('')
+        lastMessage.content = [{ type: 'text', text: existingText + accumulatedText }]
+      } else {
+        // Add new assistant message
+        continuationRequest.messages.push({
+          participant: config.innerName,
+          content: [{ type: 'text', text: accumulatedText }],
+        })
+      }
+      
+      logger.debug({ 
+        continuationCount: continuationCount + 1, 
+        accumulatedLength: accumulatedText.length,
+        stopSequence 
+      }, 'Continuing completion after stop sequence')
+      
+      const continuation = await this.llmMiddleware.complete(continuationRequest)
+      
+      // Get continuation text
+      const continuationText = continuation.content
+        .filter((c: any) => c.type === 'text')
+        .map((c: any) => c.text)
+        .join('')
+      
+      accumulatedText += continuationText
+      lastCompletion = continuation
+      
+      // Check if we need to continue again
+      if (continuation.stopReason === 'stop_sequence') {
+        let unclosedTag = this.detectUnclosedXmlTag(accumulatedText)
+        // Also check for prefilled thinking tag (no </thinking> means still open)
+        if (!unclosedTag && config.prefill_thinking && !accumulatedText.includes('</thinking>')) {
+          unclosedTag = 'thinking'
+        }
+        const newStopSequence = continuation.raw?.stop_sequence
+        
+        if (unclosedTag && newStopSequence) {
+          logger.debug({ unclosedTag, newStopSequence }, 'Still mid-XML-block, continuing again')
+          stopSequence = newStopSequence
+          continuationCount++
+          continue
+        }
+      }
+      
+      // Done continuing
+      break
+    }
+    
+    if (continuationCount >= maxContinuations) {
+      logger.warn({ maxContinuations }, 'Reached max continuations for stop sequence recovery')
+    }
+    
+    // Return a merged completion with accumulated text
+    return {
+      ...lastCompletion,
+      content: [{ type: 'text', text: accumulatedText }],
     }
   }
 }
