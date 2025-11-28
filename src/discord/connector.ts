@@ -634,6 +634,7 @@ export class DiscordConnector {
   /**
    * Send a webhook message
    * For tool output, creates/reuses a webhook in the channel
+   * Falls back to regular message if webhooks aren't supported (e.g., threads)
    */
   async sendWebhook(channelId: string, content: string, username: string): Promise<void> {
     return retryDiscord(async () => {
@@ -646,26 +647,33 @@ export class DiscordConnector {
         return
       }
 
-      // Get or create webhook for this channel
-      const webhooks = await channel.fetchWebhooks()
-      let webhook = webhooks.find((wh) => wh.name === 'Chapter3-Tools')
+      try {
+        // Get or create webhook for this channel
+        const webhooks = await channel.fetchWebhooks()
+        let webhook = webhooks.find((wh) => wh.name === 'Chapter3-Tools')
 
-      if (!webhook) {
-        webhook = await channel.createWebhook({
-          name: 'Chapter3-Tools',
-          reason: 'Tool output display',
+        if (!webhook) {
+          webhook = await channel.createWebhook({
+            name: 'Chapter3-Tools',
+            reason: 'Tool output display',
+          })
+          logger.debug({ channelId, webhookId: webhook.id }, 'Created webhook')
+        }
+
+        // Send via webhook
+        await webhook.send({
+          content,
+          username,
+          avatarURL: this.client.user?.displayAvatarURL(),
         })
-        logger.debug({ channelId, webhookId: webhook.id }, 'Created webhook')
+
+        logger.debug({ channelId, username }, 'Sent webhook message')
+      } catch (error: any) {
+        // Threads and some channel types don't support webhooks
+        // Fall back to regular message
+        logger.warn({ channelId, error: error.message }, 'Webhook failed, falling back to regular message')
+        await this.sendMessage(channelId, content)
       }
-
-      // Send via webhook
-      await webhook.send({
-        content,
-        username,
-        avatarURL: this.client.user?.displayAvatarURL(),
-      })
-
-      logger.debug({ channelId, username }, 'Sent webhook message')
     }, this.options.maxBackoffMs)
   }
 

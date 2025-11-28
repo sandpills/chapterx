@@ -315,14 +315,37 @@ export class LLMMiddleware {
 
   private mergeToUserMessage(messages: ParticipantMessage[]): ProviderMessage {
     const parts: string[] = []
+    const images: any[] = []
 
     for (const msg of messages) {
       const text = this.extractText(msg.content)
       if (text) {
         parts.push(`${msg.participant}: ${text}`)
       }
+      // Collect images
+      for (const block of msg.content) {
+        if (block.type === 'image') {
+          images.push(block)
+        }
+      }
     }
 
+    // If there are images, return content as array of blocks
+    if (images.length > 0) {
+      const content: any[] = []
+      // Add text first
+      if (parts.length > 0) {
+        content.push({ type: 'text', text: parts.join('\n') })
+      }
+      // Add images
+      content.push(...images)
+      return {
+        role: 'user',
+        content,
+      }
+    }
+
+    // No images - return simple string content
     return {
       role: 'user',
       content: parts.join('\n'),

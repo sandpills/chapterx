@@ -13,6 +13,7 @@ import { ConfigSystem } from './config/system.js'
 import { ContextBuilder } from './context/builder.js'
 import { LLMMiddleware } from './llm/middleware.js'
 import { AnthropicProvider } from './llm/providers/anthropic.js'
+import { OpenAIProvider } from './llm/providers/openai.js'
 import { ToolSystem } from './tools/system.js'
 import { ApiServer } from './api/server.js'
 import { logger } from './utils/logger.js'
@@ -26,8 +27,10 @@ async function main() {
     const toolsPath = process.env.TOOLS_PATH || './tools'
     const cachePath = process.env.CACHE_PATH || './cache'
 
-    // Read Discord token from file in working directory
-    const tokenFilePath = join(process.cwd(), 'discord_token')
+    // Read Discord token from file (configurable via DISCORD_TOKEN_FILE env var)
+    const tokenFilePath = process.env.DISCORD_TOKEN_FILE 
+      ? join(process.cwd(), process.env.DISCORD_TOKEN_FILE)
+      : join(process.cwd(), 'discord_token')
     let discordToken: string
     
     try {
@@ -35,7 +38,7 @@ async function main() {
       logger.info({ tokenFile: tokenFilePath }, 'Discord token loaded from file')
     } catch (error) {
       logger.error({ error, tokenFile: tokenFilePath }, 'Failed to read discord_token file')
-      throw new Error('Could not read discord_token file. Please create a file named "discord_token" with your bot token.')
+      throw new Error(`Could not read token file: ${tokenFilePath}. Please create it with your bot token.`)
     }
 
     if (!discordToken) {
@@ -64,7 +67,18 @@ async function main() {
       logger.info('Registered Anthropic provider')
     }
 
-    // TODO: Register other providers (Bedrock, OpenAI, Google)
+    // Register OpenAI provider if configured
+    const openaiConfig = vendorConfigs['openai']
+    if (openaiConfig?.config.openai_api_key) {
+      const provider = new OpenAIProvider({
+        apiKey: openaiConfig.config.openai_api_key,
+        baseUrl: openaiConfig.config.openai_base_url,  // Optional: for compatible APIs
+      })
+      llmMiddleware.registerProvider(provider)
+      logger.info('Registered OpenAI provider')
+    }
+
+    // TODO: Register other providers (Bedrock, Google)
 
     // Note: MCP servers are initialized on first bot activation
     // They are configured in bot config and can be overridden per-guild/channel
