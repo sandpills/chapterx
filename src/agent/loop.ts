@@ -163,6 +163,9 @@ export class AgentLoop {
     // Wrap activation in both logging and trace context
     const activationPromise = triggeringMessageId
       ? withActivationLogging(channelId, triggeringMessageId, async () => {
+          // Get channel name for trace indexing
+          const channelName = await this.connector.getChannelName(channelId)
+          
           // Run with trace context
           const { trace, error: traceError } = await withTrace(
             channelId,
@@ -180,16 +183,18 @@ export class AgentLoop {
               })
               
               return this.handleActivation(channelId, guildId, triggeringMessageId, traceCollector)
-            }
+            },
+            channelName
           )
           
           // Write trace to disk (even if activation failed - we want to see what happened)
           try {
             const writer = getTraceWriter()
-            writer.writeTrace(trace)
+            writer.writeTrace(trace, undefined, undefined, channelName)
             logger.info({ 
               traceId: trace.traceId, 
-              channelId, 
+              channelId,
+              channelName,
               hadError: !!traceError 
             }, traceError ? 'Trace saved (with error)' : 'Trace saved')
           } catch (writeError) {

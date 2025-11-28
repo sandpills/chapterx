@@ -40,10 +40,17 @@ export class TraceWriter {
   /**
    * Write a complete trace to disk
    */
-  writeTrace(trace: ActivationTrace, requestBodies?: any[], responseBodies?: any[]): string {
+  writeTrace(trace: ActivationTrace, requestBodies?: any[], responseBodies?: any[], channelName?: string): string {
     const timestamp = trace.timestamp.toISOString().replace(/[:.]/g, '-')
+    
+    // Organize traces by bot name
+    const botDir = trace.botId ? join(TRACE_DIR, trace.botId) : TRACE_DIR
+    if (trace.botId && !existsSync(botDir)) {
+      mkdirSync(botDir, { recursive: true })
+    }
+    
     const filename = `${trace.channelId}-${trace.traceId}-${timestamp}.json`
-    const filepath = join(TRACE_DIR, filename)
+    const filepath = join(botDir, filename)
     
     // Write request/response bodies separately (they're huge)
     const bodyRefs: { requests: string[]; responses: string[] } = {
@@ -83,7 +90,7 @@ export class TraceWriter {
     writeFileSync(filepath, JSON.stringify(trace, null, 2))
     
     // Append to index
-    this.appendToIndex(trace, filename)
+    this.appendToIndex(trace, filename, channelName)
     
     logger.debug({ traceId: trace.traceId, filepath }, 'Wrote trace to disk')
     
@@ -93,12 +100,14 @@ export class TraceWriter {
   /**
    * Append trace summary to index for fast lookups
    */
-  private appendToIndex(trace: ActivationTrace, filename: string): void {
+  private appendToIndex(trace: ActivationTrace, filename: string, channelName?: string): void {
     const index: TraceIndex & { filename: string } = {
       traceId: trace.traceId,
       timestamp: trace.timestamp,
       channelId: trace.channelId,
       triggeringMessageId: trace.triggeringMessageId,
+      botName: trace.botId,
+      channelName,
       success: trace.outcome?.success ?? false,
       durationMs: trace.durationMs ?? 0,
       llmCallCount: trace.llmCalls.length,

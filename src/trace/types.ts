@@ -356,6 +356,12 @@ export interface TraceIndex {
   channelId: string
   triggeringMessageId: string
   
+  /** Bot that handled this activation */
+  botName?: string
+  
+  /** Human-readable channel name (for display) */
+  channelName?: string
+  
   /** Quick stats for filtering */
   success: boolean
   durationMs: number

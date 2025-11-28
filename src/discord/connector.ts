@@ -85,6 +85,18 @@ export class DiscordConnector {
   }
 
   /**
+   * Get channel name by ID (for display purposes)
+   */
+  async getChannelName(channelId: string): Promise<string | undefined> {
+    try {
+      const channel = await this.client.channels.fetch(channelId) as TextChannel
+      return channel?.name || undefined
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
    * Fetch context from Discord (messages, configs, images)
    */
   async fetchContext(params: FetchContextParams): Promise<DiscordContext> {

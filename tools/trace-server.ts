@@ -2,57 +2,134 @@
 /**
  * Trace Viewer Web Server
  * 
- * A local web UI for debugging activation traces.
- * Primary flow: Discord URL → Find traces → Explore
+ * A web UI for debugging activation traces across multiple bots.
+ * Supports authentication, multi-bot views, and channel name resolution.
+ * 
+ * Environment variables:
+ *   PORT          - Server port (default: 3847)
+ *   AUTH_TOKEN    - Bearer token for authentication (optional, no auth if not set)
+ *   LOGS_DIR      - Base logs directory (default: ./logs)
+ *   BOTS_CONFIG   - Path to bots config directory for channel name lookup
  * 
  * Usage:
- *   ./tools/trace-server.ts [--port 3847] [--open <messageId>]
+ *   ./tools/trace-server.ts
+ *   AUTH_TOKEN=secret PORT=3847 ./tools/trace-server.ts
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http'
-import { readFileSync, existsSync, readdirSync } from 'fs'
-import { join } from 'path'
+import { readFileSync, existsSync, readdirSync, statSync } from 'fs'
+import { join, basename } from 'path'
 import { ActivationTrace, TraceIndex } from '../src/trace/types.js'
 
 const PORT = parseInt(process.env.PORT || '3847', 10)
-const TRACE_DIR = process.env.TRACE_DIR || './logs/traces'
-const INDEX_FILE = join(TRACE_DIR, 'index.jsonl')
+const AUTH_TOKEN = process.env.AUTH_TOKEN || ''
+const LOGS_DIR = process.env.LOGS_DIR || './logs'
+const TRACE_DIR = join(LOGS_DIR, 'traces')
+
+// Channel name cache (loaded from traces)
+const channelNameCache = new Map<string, string>()
 
 // ============================================================================
 // Data Loading
 // ============================================================================
 
-function loadIndex(): (TraceIndex & { filename: string })[] {
-  if (!existsSync(INDEX_FILE)) return []
-  return readFileSync(INDEX_FILE, 'utf-8')
+function discoverBots(): string[] {
+  if (!existsSync(TRACE_DIR)) return []
+  
+  return readdirSync(TRACE_DIR)
+    .filter(name => {
+      const path = join(TRACE_DIR, name)
+      return statSync(path).isDirectory() && name !== 'index.jsonl'
+    })
+}
+
+function loadIndex(botName?: string): (TraceIndex & { filename: string, botName?: string })[] {
+  const indexFile = join(TRACE_DIR, 'index.jsonl')
+  if (!existsSync(indexFile)) return []
+  
+  const entries = readFileSync(indexFile, 'utf-8')
     .split('\n')
     .filter(Boolean)
     .map(line => {
       try { return JSON.parse(line) } 
       catch { return null }
     })
-    .filter(Boolean)
+    .filter(Boolean) as (TraceIndex & { filename: string, botName?: string })[]
+  
+  // Cache channel names from entries
+  for (const entry of entries) {
+    if (entry.channelName && entry.channelId) {
+      channelNameCache.set(entry.channelId, entry.channelName)
+    }
+  }
+  
+  // Filter by bot if specified
+  if (botName) {
+    return entries.filter(e => e.botName === botName)
+  }
+  
+  return entries
 }
 
 function loadTrace(traceId: string): ActivationTrace | null {
-  const files = readdirSync(TRACE_DIR).filter(f => 
+  // Search in all bot directories
+  const bots = discoverBots()
+  
+  for (const bot of bots) {
+    const botDir = join(TRACE_DIR, bot)
+    const files = readdirSync(botDir).filter(f => 
+      f.includes(traceId) && f.endsWith('.json')
+    )
+    if (files.length > 0) {
+      const content = readFileSync(join(botDir, files[0]!), 'utf-8')
+      return JSON.parse(content)
+    }
+  }
+  
+  // Also check root trace dir for legacy format
+  const rootFiles = readdirSync(TRACE_DIR).filter(f => 
     f.includes(traceId) && f.endsWith('.json') && !f.includes('index')
   )
-  if (files.length === 0) return null
-  const content = readFileSync(join(TRACE_DIR, files[0]!), 'utf-8')
-  return JSON.parse(content)
+  if (rootFiles.length > 0) {
+    const content = readFileSync(join(TRACE_DIR, rootFiles[0]!), 'utf-8')
+    return JSON.parse(content)
+  }
+  
+  return null
 }
 
 function loadRequestBody(ref: string): any {
-  const path = join(process.cwd(), 'logs', 'llm-requests', ref)
+  const path = join(LOGS_DIR, 'llm-requests', ref)
   if (!existsSync(path)) return null
   return JSON.parse(readFileSync(path, 'utf-8'))
 }
 
 function loadResponseBody(ref: string): any {
-  const path = join(process.cwd(), 'logs', 'llm-responses', ref)
+  const path = join(LOGS_DIR, 'llm-responses', ref)
   if (!existsSync(path)) return null
   return JSON.parse(readFileSync(path, 'utf-8'))
+}
+
+function getChannelName(channelId: string): string {
+  return channelNameCache.get(channelId) || channelId
+}
+
+// ============================================================================
+// Authentication
+// ============================================================================
+
+function checkAuth(req: IncomingMessage): boolean {
+  if (!AUTH_TOKEN) return true // No auth required if no token set
+  
+  const authHeader = req.headers.authorization
+  if (!authHeader) return false
+  
+  // Support both "Bearer <token>" and just "<token>"
+  const token = authHeader.startsWith('Bearer ') 
+    ? authHeader.slice(7) 
+    : authHeader
+  
+  return token === AUTH_TOKEN
 }
 
 // ============================================================================
@@ -62,11 +139,26 @@ function loadResponseBody(ref: string): any {
 function handleApi(req: IncomingMessage, res: ServerResponse, path: string): void {
   res.setHeader('Content-Type', 'application/json')
   
+  // Check authentication for all API endpoints
+  if (!checkAuth(req)) {
+    res.statusCode = 401
+    res.end(JSON.stringify({ error: 'Unauthorized' }))
+    return
+  }
+  
   try {
-    // GET /api/search?q=<messageId or URL>
+    // GET /api/bots - List available bots
+    if (path === '/api/bots') {
+      const bots = discoverBots()
+      res.end(JSON.stringify({ bots }))
+      return
+    }
+    
+    // GET /api/search?q=<messageId or URL>&bot=<botName>
     if (path.startsWith('/api/search')) {
       const url = new URL(req.url!, `http://localhost:${PORT}`)
       const query = url.searchParams.get('q') || ''
+      const botFilter = url.searchParams.get('bot') || undefined
       
       // Extract message ID from Discord URL or use directly
       let messageId = query
@@ -75,7 +167,7 @@ function handleApi(req: IncomingMessage, res: ServerResponse, path: string): voi
         messageId = urlMatch[1]!
       }
       
-      const index = loadIndex()
+      const index = loadIndex(botFilter)
       const results: Array<{
         traceId: string
         timestamp: string
@@ -83,6 +175,8 @@ function handleApi(req: IncomingMessage, res: ServerResponse, path: string): voi
         position?: number
         success: boolean
         responsePreview?: string
+        botName?: string
+        channelName?: string
       }> = []
       
       for (const entry of index) {
@@ -94,6 +188,8 @@ function handleApi(req: IncomingMessage, res: ServerResponse, path: string): voi
             role: 'trigger',
             success: entry.success,
             responsePreview: trace?.outcome?.responseText?.slice(0, 100),
+            botName: entry.botName,
+            channelName: getChannelName(entry.channelId),
           })
         } else if (entry.contextMessageIds?.includes(messageId)) {
           const trace = loadTrace(entry.traceId)
@@ -104,6 +200,8 @@ function handleApi(req: IncomingMessage, res: ServerResponse, path: string): voi
             role: 'context',
             position: msg?.position,
             success: entry.success,
+            botName: entry.botName,
+            channelName: getChannelName(entry.channelId),
           })
         } else if (entry.sentMessageIds?.includes(messageId)) {
           results.push({
@@ -111,6 +209,8 @@ function handleApi(req: IncomingMessage, res: ServerResponse, path: string): voi
             timestamp: String(entry.timestamp),
             role: 'sent',
             success: entry.success,
+            botName: entry.botName,
+            channelName: getChannelName(entry.channelId),
           })
         }
       }
@@ -125,12 +225,19 @@ function handleApi(req: IncomingMessage, res: ServerResponse, path: string): voi
       const limit = parseInt(url.searchParams.get('limit') || '50', 10)
       const channel = url.searchParams.get('channel')
       const failed = url.searchParams.get('failed') === 'true'
+      const botFilter = url.searchParams.get('bot') || undefined
       
-      let entries = loadIndex().reverse()
+      let entries = loadIndex(botFilter).reverse()
       if (channel) entries = entries.filter(e => e.channelId === channel)
       if (failed) entries = entries.filter(e => !e.success)
       
-      res.end(JSON.stringify(entries.slice(0, limit)))
+      // Add channel names to entries
+      const enrichedEntries = entries.slice(0, limit).map(e => ({
+        ...e,
+        channelName: getChannelName(e.channelId),
+      }))
+      
+      res.end(JSON.stringify(enrichedEntries))
       return
     }
     
@@ -170,6 +277,16 @@ function handleApi(req: IncomingMessage, res: ServerResponse, path: string): voi
         return
       }
       res.end(JSON.stringify(body))
+      return
+    }
+    
+    // GET /api/channels - List known channels
+    if (path === '/api/channels') {
+      const channels = Array.from(channelNameCache.entries()).map(([id, name]) => ({
+        id,
+        name,
+      }))
+      res.end(JSON.stringify({ channels }))
       return
     }
     
@@ -220,10 +337,104 @@ const HTML = `<!DOCTYPE html>
       padding: 20px;
     }
     
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+    }
+    
     h1 {
       font-size: 1.5rem;
+      color: var(--text);
+    }
+    
+    .bot-selector {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    
+    .bot-selector label {
+      color: var(--text-muted);
+      font-size: 0.9rem;
+    }
+    
+    .bot-selector select {
+      padding: 8px 12px;
+      font-size: 0.9rem;
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      outline: none;
+      cursor: pointer;
+      min-width: 150px;
+    }
+    
+    .bot-selector select:focus {
+      border-color: var(--accent);
+    }
+    
+    .auth-form {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--bg);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+    }
+    
+    .auth-box {
+      background: var(--bg-secondary);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 32px;
+      width: 400px;
+      text-align: center;
+    }
+    
+    .auth-box h2 {
       margin-bottom: 20px;
       color: var(--text);
+    }
+    
+    .auth-box input {
+      width: 100%;
+      padding: 12px 16px;
+      font-size: 1rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      color: var(--text);
+      outline: none;
+      margin-bottom: 16px;
+    }
+    
+    .auth-box input:focus {
+      border-color: var(--accent);
+    }
+    
+    .auth-box button {
+      width: 100%;
+      padding: 12px 24px;
+      font-size: 1rem;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+      font-weight: 500;
+    }
+    
+    .auth-error {
+      color: var(--error);
+      margin-top: 12px;
+      display: none;
     }
     
     .search-box {
@@ -335,6 +546,21 @@ const HTML = `<!DOCTYPE html>
     
     .status-icon.success { color: var(--success); }
     .status-icon.error { color: var(--error); }
+    
+    .bot-badge {
+      font-size: 0.7rem;
+      padding: 2px 6px;
+      border-radius: 3px;
+      background: var(--bg);
+      color: var(--accent);
+      margin-left: 8px;
+      font-weight: 500;
+    }
+    
+    .channel-name {
+      color: var(--text-muted);
+      font-size: 0.85rem;
+    }
     
     /* Trace Detail View */
     .trace-view {
@@ -573,6 +799,7 @@ const HTML = `<!DOCTYPE html>
       gap: 16px;
       font-size: 0.85rem;
       color: var(--text-muted);
+      flex-wrap: wrap;
     }
     
     .view-json-btn {
@@ -623,8 +850,26 @@ const HTML = `<!DOCTYPE html>
   </style>
 </head>
 <body>
-  <div class="container">
-    <h1>🔍 Trace Viewer</h1>
+  <!-- Auth Form (shown if auth required) -->
+  <div id="authForm" class="auth-form" style="display: none;">
+    <div class="auth-box">
+      <h2>🔐 Authentication Required</h2>
+      <input type="password" id="authToken" placeholder="Enter access token">
+      <button onclick="authenticate()">Sign In</button>
+      <div id="authError" class="auth-error">Invalid token</div>
+    </div>
+  </div>
+  
+  <div id="mainContent" class="container">
+    <div class="header">
+      <h1>🔍 Trace Viewer</h1>
+      <div class="bot-selector">
+        <label>Bot:</label>
+        <select id="botSelect" onchange="onBotChange()">
+          <option value="">All Bots</option>
+        </select>
+      </div>
+    </div>
     
     <!-- Search View -->
     <div id="searchView">
@@ -657,9 +902,62 @@ const HTML = `<!DOCTYPE html>
   <script>
     // State
     let currentTrace = null;
+    let authToken = localStorage.getItem('trace_viewer_token') || '';
+    let currentBot = '';
+    
+    // Check if auth is required
+    async function checkAuth() {
+      try {
+        const res = await fetch('/api/bots', {
+          headers: authToken ? { 'Authorization': 'Bearer ' + authToken } : {}
+        });
+        if (res.status === 401) {
+          document.getElementById('authForm').style.display = 'flex';
+          document.getElementById('mainContent').style.display = 'none';
+          return false;
+        }
+        return true;
+      } catch (e) {
+        return false;
+      }
+    }
+    
+    async function authenticate() {
+      const token = document.getElementById('authToken').value;
+      try {
+        const res = await fetch('/api/bots', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        if (res.ok) {
+          authToken = token;
+          localStorage.setItem('trace_viewer_token', token);
+          document.getElementById('authForm').style.display = 'none';
+          document.getElementById('mainContent').style.display = 'block';
+          init();
+        } else {
+          document.getElementById('authError').style.display = 'block';
+        }
+      } catch (e) {
+        document.getElementById('authError').style.display = 'block';
+      }
+    }
     
     // Initialize
-    document.addEventListener('DOMContentLoaded', () => {
+    document.addEventListener('DOMContentLoaded', async () => {
+      const authed = await checkAuth();
+      if (authed) {
+        document.getElementById('authForm').style.display = 'none';
+        init();
+      }
+      
+      // Enter key to auth
+      document.getElementById('authToken').addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') authenticate();
+      });
+    });
+    
+    async function init() {
+      await loadBots();
       loadRecentTraces();
       
       // Check URL for initial search
@@ -674,10 +972,41 @@ const HTML = `<!DOCTYPE html>
       document.getElementById('searchInput').addEventListener('keypress', (e) => {
         if (e.key === 'Enter') search();
       });
-    });
+    }
+    
+    async function loadBots() {
+      const res = await apiFetch('/api/bots');
+      const data = await res.json();
+      const select = document.getElementById('botSelect');
+      
+      for (const bot of data.bots) {
+        const option = document.createElement('option');
+        option.value = bot;
+        option.textContent = bot;
+        select.appendChild(option);
+      }
+    }
+    
+    function onBotChange() {
+      currentBot = document.getElementById('botSelect').value;
+      loadRecentTraces();
+    }
+    
+    function apiFetch(url, options = {}) {
+      return fetch(url, {
+        ...options,
+        headers: {
+          ...options.headers,
+          ...(authToken ? { 'Authorization': 'Bearer ' + authToken } : {})
+        }
+      });
+    }
     
     async function loadRecentTraces() {
-      const res = await fetch('/api/traces?limit=10');
+      let url = '/api/traces?limit=10';
+      if (currentBot) url += '&bot=' + encodeURIComponent(currentBot);
+      
+      const res = await apiFetch(url);
       const traces = await res.json();
       
       const html = traces.map(t => \`
@@ -687,7 +1016,8 @@ const HTML = `<!DOCTYPE html>
             <span class="result-time">\${new Date(t.timestamp).toLocaleString()}</span>
           </div>
           <div>
-            Channel: \${t.channelId.slice(-8)}
+            <span class="channel-name">\${t.channelName || t.channelId.slice(-8)}</span>
+            \${t.botName ? \`<span class="bot-badge">\${t.botName}</span>\` : ''}
             <span class="status-icon \${t.success ? 'success' : 'error'}">\${t.success ? '✓' : '✗'}</span>
             <span style="color: var(--text-muted); margin-left: 12px;">
               \${t.llmCallCount} LLM calls, \${formatTokens(t.totalTokens)} tokens
@@ -703,7 +1033,10 @@ const HTML = `<!DOCTYPE html>
       const query = document.getElementById('searchInput').value.trim();
       if (!query) return;
       
-      const res = await fetch('/api/search?q=' + encodeURIComponent(query));
+      let url = '/api/search?q=' + encodeURIComponent(query);
+      if (currentBot) url += '&bot=' + encodeURIComponent(currentBot);
+      
+      const res = await apiFetch(url);
       const data = await res.json();
       
       if (data.results.length === 0) {
@@ -722,10 +1055,12 @@ const HTML = `<!DOCTYPE html>
             <div>
               <span class="result-role \${r.role}">\${r.role}</span>
               <span class="result-trace-id" style="margin-left: 12px;">\${r.traceId}</span>
+              \${r.botName ? \`<span class="bot-badge">\${r.botName}</span>\` : ''}
               <span class="status-icon \${r.success ? 'success' : 'error'}">\${r.success ? '✓' : '✗'}</span>
             </div>
             <span class="result-time">\${new Date(r.timestamp).toLocaleString()}</span>
           </div>
+          <div class="channel-name">\${r.channelName || 'Unknown channel'}</div>
           \${r.role === 'trigger' ? \`<div class="result-preview">Response: "\${r.responsePreview || '(no response)'}..."</div>\` : ''}
           \${r.role === 'context' && r.position !== undefined ? \`<div class="result-preview">Position in context: #\${r.position}</div>\` : ''}
         </div>
@@ -738,7 +1073,7 @@ const HTML = `<!DOCTYPE html>
     }
     
     async function loadTrace(traceId) {
-      const res = await fetch('/api/trace/' + traceId);
+      const res = await apiFetch('/api/trace/' + traceId);
       if (!res.ok) {
         alert('Failed to load trace');
         return;
@@ -1001,14 +1336,14 @@ const HTML = `<!DOCTYPE html>
     
     async function viewRequest(ref) {
       if (!ref) { alert('No request body stored'); return; }
-      const res = await fetch('/api/request/' + ref);
+      const res = await apiFetch('/api/request/' + ref);
       const data = await res.json();
       showJsonModal('LLM Request', data);
     }
     
     async function viewResponse(ref) {
       if (!ref) { alert('No response body stored'); return; }
-      const res = await fetch('/api/response/' + ref);
+      const res = await apiFetch('/api/response/' + ref);
       const data = await res.json();
       showJsonModal('LLM Response', data);
     }
@@ -1018,7 +1353,6 @@ const HTML = `<!DOCTYPE html>
       modal.style.cssText = 'position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.8); display: flex; align-items: center; justify-content: center; z-index: 1000;';
       modal.onclick = (e) => { if (e.target === modal) modal.remove(); };
       
-      // Build formatted view based on data type
       const formattedHtml = renderFormattedLLMData(title, data);
       const rawJson = escapeHtml(JSON.stringify(data, null, 2));
       
@@ -1071,7 +1405,6 @@ const HTML = `<!DOCTYPE html>
       let html = '';
       const renderedKeys = new Set(['system', 'messages', 'tools', 'model', 'max_tokens', 'temperature']);
       
-      // System prompt
       if (data.system) {
         html += \`
           <div style="margin-bottom: 20px;">
@@ -1084,7 +1417,6 @@ const HTML = `<!DOCTYPE html>
         \`;
       }
       
-      // Messages
       if (data.messages && data.messages.length > 0) {
         html += \`<div style="font-weight: 600; color: var(--accent); margin-bottom: 12px;">💬 Messages (\${data.messages.length})</div>\`;
         
@@ -1097,7 +1429,6 @@ const HTML = `<!DOCTYPE html>
           if (typeof msg.content === 'string') {
             content = msg.content;
           } else if (Array.isArray(msg.content)) {
-            // Handle content blocks
             for (const block of msg.content) {
               if (block.type === 'text') {
                 content += block.text + '\\n';
@@ -1113,7 +1444,6 @@ const HTML = `<!DOCTYPE html>
             }
           }
           
-          // Check for extra fields on message
           const msgExtraKeys = Object.keys(msg).filter(k => !['role', 'content'].includes(k));
           const msgExtra = msgExtraKeys.length > 0 ? \`\\n--- Extra fields: \${JSON.stringify(Object.fromEntries(msgExtraKeys.map(k => [k, msg[k]])), null, 2)}\` : '';
           
@@ -1129,7 +1459,6 @@ const HTML = `<!DOCTYPE html>
         }
       }
       
-      // Tools
       if (data.tools && data.tools.length > 0) {
         html += \`
           <div style="margin-top: 20px;">
@@ -1141,7 +1470,6 @@ const HTML = `<!DOCTYPE html>
         \`;
       }
       
-      // Model info
       html += \`
         <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; gap: 24px; color: var(--text-muted); font-size: 0.85rem; flex-wrap: wrap;">
           <span>Model: <strong>\${data.model || 'unknown'}</strong></span>
@@ -1150,7 +1478,6 @@ const HTML = `<!DOCTYPE html>
         </div>
       \`;
       
-      // Other fields not explicitly rendered
       const otherKeys = Object.keys(data).filter(k => !renderedKeys.has(k));
       if (otherKeys.length > 0) {
         html += \`
@@ -1173,7 +1500,6 @@ const HTML = `<!DOCTYPE html>
       let html = '';
       const renderedKeys = new Set(['content', 'stop_reason', 'model', 'usage', 'id', 'type']);
       
-      // Content blocks
       if (data.content && data.content.length > 0) {
         for (let i = 0; i < data.content.length; i++) {
           const block = data.content[i];
@@ -1202,7 +1528,6 @@ const HTML = `<!DOCTYPE html>
               </div>
             \`;
           } else {
-            // Unknown block type - show everything
             html += \`
               <div style="margin-bottom: 16px;">
                 <div style="font-weight: 600; color: var(--warning); margin-bottom: 8px;">❓ \${block.type || 'Unknown'} Block [\${i}]</div>
@@ -1215,7 +1540,6 @@ const HTML = `<!DOCTYPE html>
         }
       }
       
-      // Metadata
       html += \`
         <div style="margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border);">
           <div style="display: flex; gap: 24px; color: var(--text-muted); font-size: 0.85rem; flex-wrap: wrap;">
@@ -1235,7 +1559,6 @@ const HTML = `<!DOCTYPE html>
         </div>
       \`;
       
-      // Other fields not explicitly rendered
       const otherKeys = Object.keys(data).filter(k => !renderedKeys.has(k));
       if (otherKeys.length > 0) {
         html += \`
@@ -1295,6 +1618,7 @@ const server = createServer((req, res) => {
   if (url.pathname.startsWith('/api/')) {
     handleApi(req, res, url.pathname)
   } else {
+    // For HTML page, check auth via cookie or redirect to login
     res.setHeader('Content-Type', 'text/html')
     res.end(HTML)
   }
@@ -1302,6 +1626,10 @@ const server = createServer((req, res) => {
 
 server.listen(PORT, () => {
   console.log(`\n  🔍 Trace Viewer running at http://localhost:${PORT}\n`)
-  console.log(`  Paste a Discord message link to find related traces.\n`)
+  if (AUTH_TOKEN) {
+    console.log(`  🔐 Authentication enabled (set AUTH_TOKEN env var)\n`)
+  } else {
+    console.log(`  ⚠️  No authentication (set AUTH_TOKEN for production)\n`)
+  }
+  console.log(`  📁 Logs directory: ${LOGS_DIR}\n`)
 })
-

@@ -43,14 +43,15 @@ export async function withTrace<T>(
   channelId: string,
   triggeringMessageId: string,
   botId: string,
-  fn: (trace: TraceCollector) => Promise<T>
-): Promise<{ result?: T; trace: ActivationTrace; error?: Error }> {
+  fn: (trace: TraceCollector) => Promise<T>,
+  channelName?: string
+): Promise<{ result?: T; trace: ActivationTrace; error?: Error; channelName?: string }> {
   const collector = new TraceCollector(channelId, triggeringMessageId, botId)
   
   try {
     const result = await traceContext.run(collector, () => fn(collector))
     const trace = collector.finalize()
-    return { result, trace }
+    return { result, trace, channelName }
   } catch (err) {
     // Record the error in the trace
     const error = err instanceof Error ? err : new Error(String(err))
@@ -62,7 +63,7 @@ export async function withTrace<T>(
     })
     
     const trace = collector.finalize()
-    return { trace, error }
+    return { trace, error, channelName }
   }
 }
 
