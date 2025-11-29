@@ -385,11 +385,8 @@ export class ContextBuilder {
       if (msg.content.trim().startsWith('.')) {
         return false
       }
-      // Filter messages with dotted_face emoji (🙃) in content
-      if (msg.content.includes('🙃')) {
-        return false
-      }
-      // Filter messages with dotted_line_face emoji (🫥) reaction
+      // Filter messages with dotted_line_face reaction (🫥)
+      // Anyone can add this reaction to hide a message from context
       if (msg.reactions?.some(r => r.emoji === '🫥' || r.emoji === 'dotted_line_face')) {
         return false
       }
