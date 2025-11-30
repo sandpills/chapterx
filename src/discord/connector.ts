@@ -358,16 +358,29 @@ export class DiscordConnector {
     }, this.options.maxBackoffMs)
   }
 
-  private parseHistoryCommand(content: string): { first?: string; last: string } | null | false {
+  private parseHistoryCommand(content: string): { first?: string; last: string } | null {
     const lines = content.split('\n')
-    if (lines.length < 2 || lines[1] !== '---') {
-      return false  // Malformed command
+    
+    // Find the --- separator (if present), skipping blank lines
+    let separatorIndex = -1
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i]?.trim()
+      if (line === '---') {
+        separatorIndex = i
+        break
+      }
+      // If we hit a non-empty, non-separator line before finding ---, no separator
+      if (line && line !== '') {
+        break
+      }
     }
 
     let first: string | undefined
     let last: string | undefined
 
-    for (let i = 2; i < lines.length; i++) {
+    // Parse fields - start after separator if found, otherwise after first line
+    const startIndex = separatorIndex >= 0 ? separatorIndex + 1 : 1
+    for (let i = startIndex; i < lines.length; i++) {
       const line = lines[i]?.trim()
       if (!line) continue
 
@@ -376,9 +389,10 @@ export class DiscordConnector {
       } else if (line.startsWith('last:')) {
         last = line.substring(5).trim()
       }
+      // Note: 'root:' is for Chapter2 tree tracking, not supported in Chapter3 yet
     }
 
-    // No last field = empty body = clear history
+    // No last field = clear history (even if other fields like root: are present)
     if (!last) {
       return null
     }
