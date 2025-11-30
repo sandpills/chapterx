@@ -242,6 +242,7 @@ export interface LLMCallInfo {
     temperature?: number
     maxTokens?: number
     stopSequences?: string[]
+    apiBaseUrl?: string  // LLM API endpoint URL for debugging
   }
   
   /** Full request body - stored separately for size */

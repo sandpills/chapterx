@@ -106,6 +106,7 @@ export class AnthropicProvider implements LLMProvider {
             temperature: request.temperature,
             maxTokens: request.max_tokens,
             stopSequences: request.stop_sequences,
+            apiBaseUrl: 'https://api.anthropic.com',
           },
           {
             stopReason: this.mapStopReason(response.stop_reason),
@@ -156,6 +157,7 @@ export class AnthropicProvider implements LLMProvider {
             temperature: request.temperature,
             maxTokens: request.max_tokens,
             stopSequences: request.stop_sequences,
+            apiBaseUrl: 'https://api.anthropic.com',
           },
         })
       }

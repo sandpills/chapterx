@@ -32,7 +32,10 @@ export class OpenAIProvider implements LLMProvider {
 
   constructor(config: OpenAIProviderConfig) {
     this.apiKey = config.apiKey
-    this.baseUrl = config.baseUrl || 'https://api.openai.com/v1'
+    if (!config.baseUrl) {
+      throw new Error('OpenAI provider requires baseUrl to be configured')
+    }
+    this.baseUrl = config.baseUrl
   }
 
   async complete(request: ProviderRequest): Promise<LLMCompletion> {
@@ -153,6 +156,7 @@ export class OpenAIProvider implements LLMProvider {
             temperature: request.temperature,
             maxTokens: request.max_tokens,
             stopSequences: request.stop_sequences,
+            apiBaseUrl: this.baseUrl,
           },
           {
             stopReason: this.mapStopReason(choice?.finish_reason),
@@ -199,6 +203,7 @@ export class OpenAIProvider implements LLMProvider {
             temperature: request.temperature,
             maxTokens: request.max_tokens,
             stopSequences: request.stop_sequences,
+            apiBaseUrl: this.baseUrl,
           },
         })
       }
