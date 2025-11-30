@@ -353,8 +353,23 @@ export class AgentLoop {
   }
 
   private async shouldActivate(events: Event[], channelId: string, guildId: string): Promise<boolean> {
-    // Load config for random chance check
+    // Load config early for API-only mode check
     let config: any = null
+    try {
+      config = this.configSystem.loadConfig({
+        botName: this.botId,
+        guildId,
+        channelConfigs: [],  // No channel configs needed for this check
+      })
+    } catch {
+      // Config will be loaded again below if needed
+    }
+    
+    // Check if API-only mode is enabled
+    if (config?.api_only) {
+      logger.debug('API-only mode enabled - skipping activation')
+      return false
+    }
     
     // Check each message event for activation triggers
     for (const event of events) {

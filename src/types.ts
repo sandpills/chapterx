@@ -187,6 +187,9 @@ export interface BotConfig {
   // Loop prevention
   max_bot_reply_chain_depth: number  // Max consecutive bot messages in reply chain (prevents bot loops)
   bot_reply_chain_depth_emote: string  // Emote to show when bot reply chain depth limit is reached
+  
+  // API mode
+  api_only?: boolean  // If true, disable Discord activation handling - only serve API requests
 }
 
 /**
