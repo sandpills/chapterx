@@ -276,6 +276,7 @@ export class LLMMiddleware {
     const botDiscordUsername = request.config.botDiscordUsername
     const usePersonaPrompt = request.config.chatPersonaPrompt
     const usePersonaPrefill = request.config.chatPersonaPrefill
+    const botAsAssistant = request.config.chatBotAsAssistant !== false  // Default true
 
     // Add system prompt
     if (request.system_prompt) {
@@ -298,9 +299,9 @@ export class LLMMiddleware {
 
     for (const msg of request.messages) {
       // Match by Discord username if available, otherwise fall back to inner name
-      const isBot = botDiscordUsername 
+      const isBot = botAsAssistant && (botDiscordUsername 
         ? msg.participant === botDiscordUsername 
-        : msg.participant === botInnerName
+        : msg.participant === botInnerName)
 
       if (isBot) {
         // Flush buffer
@@ -308,14 +309,14 @@ export class LLMMiddleware {
           messages.push(this.mergeToUserMessage(buffer))
           buffer = []
         }
-        // Add bot message
+        // Add bot message as assistant
         const text = this.extractText(msg.content)
         messages.push({
           role: 'assistant',
           content: text,
         })
       } else {
-        // Add to buffer
+        // Add to buffer (including bot messages if botAsAssistant is false)
         buffer.push(msg)
       }
     }

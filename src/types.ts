@@ -130,6 +130,7 @@ export interface ModelConfig {
   botDiscordUsername?: string  // Bot's actual Discord username for chat mode message matching
   chatPersonaPrompt?: boolean  // If true, add persona instruction system prompt for chat mode
   chatPersonaPrefill?: boolean  // If true, add "botname:" prefill to end of last user message in chat mode
+  chatBotAsAssistant?: boolean  // If true (default), bot's own messages are sent as assistant role; if false, merged into user turns
 }
 
 /**
@@ -176,6 +177,7 @@ export interface BotConfig {
   // Chat mode persona
   chat_persona_prompt?: boolean  // If true, add persona instruction system prompt for chat mode
   chat_persona_prefill?: boolean  // If true, add "botname:" prefill to end of last user message in chat mode
+  chat_bot_as_assistant?: boolean  // If true (default), bot's own messages are sent as assistant role; if false, merged into user turns
   
   // Retries
   llm_retries: number
