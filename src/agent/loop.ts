@@ -755,6 +755,7 @@ export class AgentLoop {
         lastCacheMarker: state.lastCacheMarker,
         messagesSinceRoll: state.messagesSinceRoll,
         config,
+        botDiscordUsername: this.connector.getBotUsername(),  // Bot's actual Discord username for chat mode
         activations: activationsForContext,
         pluginInjections,
       }

@@ -1,0 +1,11 @@
+#!/bin/bash
+# Convenience wrapper for trace tools
+cd "$(dirname "$0")"
+
+if [ "$1" = "serve" ]; then
+  shift
+  npx tsx tools/trace-server.ts "$@"
+else
+  npx tsx tools/trace-cli.ts "$@"
+fi
+

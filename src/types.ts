@@ -127,6 +127,7 @@ export interface ModelConfig {
   mode: 'prefill' | 'chat'
   prefill_thinking?: boolean  // If true, prefill with <thinking> tag
   botInnerName: string  // For building stop sequences
+  botDiscordUsername?: string  // Bot's actual Discord username for chat mode message matching
   chatPersonaPrompt?: boolean  // If true, add persona instruction system prompt and prompt ending for chat mode
 }
 

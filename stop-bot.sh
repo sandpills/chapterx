@@ -26,3 +26,7 @@ else
     echo "  kill -9 \$(pgrep -f 'tsx src/main')"
 fi
 
+
+
+
+

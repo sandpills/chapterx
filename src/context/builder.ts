@@ -36,6 +36,7 @@ export interface BuildContextParams {
   lastCacheMarker: string | null
   messagesSinceRoll: number
   config: BotConfig
+  botDiscordUsername?: string  // Bot's actual Discord username for chat mode message matching
   activations?: Activation[]  // For preserve_thinking_context
   pluginInjections?: ContextInjection[]  // Plugin context injections
 }
@@ -50,7 +51,7 @@ export class ContextBuilder {
    * Build LLM request from Discord context
    */
   buildContext(params: BuildContextParams): ContextBuildResultWithTrace {
-    const { discordContext, toolCacheWithResults, lastCacheMarker, messagesSinceRoll, config, activations, pluginInjections } = params
+    const { discordContext, toolCacheWithResults, lastCacheMarker, messagesSinceRoll, config, botDiscordUsername, activations, pluginInjections } = params
     const originalMessageCount = discordContext.messages.length
 
     let messages = discordContext.messages
@@ -165,7 +166,7 @@ export class ContextBuilder {
     const request: LLMRequest = {
       messages: participantMessages,
       system_prompt: config.system_prompt,
-      config: this.extractModelConfig(config),
+      config: this.extractModelConfig(config, botDiscordUsername),
       tools: config.tools_enabled ? undefined : undefined,  // Tools added by Agent Loop
       stop_sequences,
     }
@@ -1093,7 +1094,7 @@ export class ContextBuilder {
     return sequences
   }
 
-  private extractModelConfig(config: BotConfig): ModelConfig {
+  private extractModelConfig(config: BotConfig, botDiscordUsername?: string): ModelConfig {
     return {
       model: config.continuation_model,
       temperature: config.temperature,
@@ -1102,6 +1103,7 @@ export class ContextBuilder {
       mode: config.mode,
       prefill_thinking: config.prefill_thinking,
       botInnerName: config.innerName,
+      botDiscordUsername,  // Bot's actual Discord username for chat mode message matching
       chatPersonaPrompt: config.chat_persona_prompt,
     }
   }

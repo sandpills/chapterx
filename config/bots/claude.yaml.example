@@ -6,6 +6,9 @@ innerName: Claude
 
 # Model configuration
 mode: prefill  # or 'chat'
+# prefill_thinking: true  # Prefill with <thinking> tag for reasoning
+# debug_thinking: true    # Send thinking as dot-prefixed debug message  
+# preserve_thinking_context: true  # Keep thinking traces in context (for Opus 4.5)
 continuation_model: claude-3-5-sonnet-20241022
 temperature: 1.0
 max_tokens: 4096
@@ -29,6 +32,9 @@ max_images: 5
 tools_enabled: true
 tool_output_visible: false  # Show tool calls in Discord
 max_tool_depth: 100  # Max tool call iterations
+
+# Tool plugins (built-in tools)
+# tool_plugins: ['config']  # Enable config plugin for list_config and request_config_change tools
 
 # MCP Servers (optional - configure multiple servers)
 # mcp_servers:

@@ -108,7 +108,9 @@ Export Discord conversation history with full metadata. Automatically processes 
           "url": "https://cdn.discord.com/...",
           "filename": "image.png",
           "contentType": "image/png",
-          "size": 123456
+          "size": 123456,
+          "base64Data": "iVBORw0KGgoAAAANSUhEUgAA...",
+          "mediaType": "image/png"
         }
       ],
       "referencedMessageId": "1234567889"
@@ -266,10 +268,12 @@ curl "http://localhost:3000/api/users/1030846477418909696/avatar?size=512" \
 ### Message Export
 - ✅ **Unified `.history` support** - Same traversal logic as bot
 - ✅ **Reactions included** - Emoji and count for each reaction
-- ✅ **Attachments** - Full metadata (URL, filename, size, type)
+- ✅ **Attachments with base64** - Full metadata (URL, filename, size, type) + base64-encoded image data
+- ✅ **Image type detection** - Magic byte detection for accurate MIME types
 - ✅ **Reply tracking** - referencedMessageId for threaded conversations
 - ✅ **Cross-channel/server** - Works with any Discord URL
-- ✅ **Recency limits** - Message count or character limits
+- ✅ **Recency limits** - Message count or character limits (default: 50 messages)
+- ✅ **Optimized fetching** - Only fetches what's needed based on limits
 
 ### User Information
 - ✅ **Global user info** - Username, discriminator, bot flag
@@ -277,11 +281,82 @@ curl "http://localhost:3000/api/users/1030846477418909696/avatar?size=512" \
 - ✅ **Avatar URLs** - CDN links with configurable size
 - ✅ **Space for mapping** - Future author aliasing support
 
+## Error Handling
+
+The API returns appropriate HTTP status codes with detailed error messages:
+
+### Status Codes
+
+| Code | Meaning | Example |
+|------|---------|---------|
+| 200 | Success | Request completed successfully |
+| 400 | Bad Request | Invalid URL format, missing parameters |
+| 401 | Unauthorized | Missing authorization header |
+| 403 | Forbidden | Invalid bearer token |
+| 404 | Not Found | User/channel/message not found |
+| 500 | Server Error | Unexpected server error |
+
+### Error Response Format
+
+```json
+{
+  "error": "Not Found",
+  "message": "Channel 123456789 not found or bot is not a member of this guild",
+  "details": "The bot cannot access this channel/message. Check bot permissions."
+}
+```
+
+### Common Errors
+
+**Invalid URL Format** (400)
+```json
+{
+  "error": "Bad Request",
+  "message": "Invalid Discord message URL format",
+  "details": "Expected format: https://discord.com/channels/GUILD_ID/CHANNEL_ID/MESSAGE_ID"
+}
+```
+
+**Channel Not Accessible** (403/404)
+```json
+{
+  "error": "Forbidden",
+  "message": "Missing Access: Bot does not have permission to view channel 123456789",
+  "details": "The bot does not have permission to access this channel."
+}
+```
+
+**Message Not Found** (404)
+```json
+{
+  "error": "Not Found",
+  "message": "Unknown Message: Message 123456789 not found in channel 987654321",
+  "details": "The bot cannot access this channel/message. Check bot permissions."
+}
+```
+
+**User Not Found** (404)
+```json
+{
+  "error": "Not Found",
+  "message": "User 123456789 not found",
+  "details": "The user may not exist or the bot cannot see them."
+}
+```
+
+**Invalid Authentication** (401/403)
+```json
+{
+  "error": "Invalid bearer token"
+}
+```
+
 ## Security
 
 - ✅ Bearer token authentication (all endpoints except `/health`)
 - ✅ Bot must have access to requested channels
 - ✅ Respects Discord permissions (bot's view of channel)
+- ✅ Detailed error messages for debugging
 - ⚠️ Keep `api_token` file secure
 - ⚠️ Consider rate limiting for production use
 

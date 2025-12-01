@@ -271,7 +271,9 @@ export class LLMMiddleware {
 
   private transformToChat(request: LLMRequest, _provider: LLMProvider): ProviderRequest {
     const messages: ProviderMessage[] = []
-    const botName = request.config.botInnerName
+    const botInnerName = request.config.botInnerName
+    // Use Discord username for message matching (identifies bot's own messages accurately)
+    const botDiscordUsername = request.config.botDiscordUsername
     const usePersonaPrompt = request.config.chatPersonaPrompt
 
     // Add system prompt
@@ -286,7 +288,7 @@ export class LLMMiddleware {
     if (usePersonaPrompt) {
       messages.push({
         role: 'system',
-        content: `Respond to the chat, where your username is shown as ${botName}. Only respond with the content of your message, without including your username.`,
+        content: `Respond to the chat, where your username is shown as ${botInnerName}. Only respond with the content of your message, without including your username.`,
       })
     }
 
@@ -294,7 +296,10 @@ export class LLMMiddleware {
     let buffer: ParticipantMessage[] = []
 
     for (const msg of request.messages) {
-      const isBot = msg.participant === botName
+      // Match by Discord username if available, otherwise fall back to inner name
+      const isBot = botDiscordUsername 
+        ? msg.participant === botDiscordUsername 
+        : msg.participant === botInnerName
 
       if (isBot) {
         // Flush buffer
@@ -320,12 +325,12 @@ export class LLMMiddleware {
       // Add persona prompt ending if configured
       if (usePersonaPrompt) {
         if (typeof userMsg.content === 'string') {
-          userMsg.content = `${userMsg.content}\n\nAI persona you describe:\n${botName}:"`
+          userMsg.content = `${userMsg.content}\n\nAI persona you describe:\n${botInnerName}:"`
         } else if (Array.isArray(userMsg.content)) {
           // Find last text block and append
           const lastTextIdx = userMsg.content.map((c: any) => c.type).lastIndexOf('text')
           if (lastTextIdx >= 0) {
-            (userMsg.content[lastTextIdx] as any).text += `\n\nAI persona you describe:\n${botName}:"`
+            (userMsg.content[lastTextIdx] as any).text += `\n\nAI persona you describe:\n${botInnerName}:"`
           }
         }
       }
