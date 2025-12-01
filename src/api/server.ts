@@ -73,10 +73,23 @@ export class ApiServer {
   private setupMiddleware(): void {
     this.app.use(express.json())
     
+    // CORS headers for cross-origin requests
+    this.app.use((req: Request, res: Response, next: NextFunction) => {
+      res.header('Access-Control-Allow-Origin', '*')
+      res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+      
+      // Handle preflight requests
+      if (req.method === 'OPTIONS') {
+        return res.sendStatus(200)
+      }
+      next()
+    })
+    
     // Bearer token authentication
     this.app.use((req: Request, res: Response, next: NextFunction) => {
-      // Skip auth for health check
-      if (req.path === '/health') {
+      // Skip auth for health check and OPTIONS
+      if (req.path === '/health' || req.method === 'OPTIONS') {
         return next()
       }
 
