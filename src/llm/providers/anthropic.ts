@@ -24,33 +24,33 @@ export class AnthropicProvider implements LLMProvider {
     const trace = getCurrentTrace()
     const callId = trace?.startLLMCall(trace.getLLMCallCount())
     const startTime = Date.now()
-    
-    // Extract system messages and convert to top-level parameter
-    const systemMessages = request.messages
-      .filter((m) => m.role === 'system')
-      .map((m) => (typeof m.content === 'string' ? m.content : ''))
-      .join('\n\n')
 
-    const nonSystemMessages = request.messages.filter((m) => m.role !== 'system')
+      // Extract system messages and convert to top-level parameter
+      const systemMessages = request.messages
+        .filter((m) => m.role === 'system')
+        .map((m) => (typeof m.content === 'string' ? m.content : ''))
+        .join('\n\n')
 
-    // Build request params (some models don't support both temperature and top_p)
-    const params: any = {
-      model: request.model,
-      max_tokens: request.max_tokens,
-      system: systemMessages || undefined,
-      messages: nonSystemMessages,
-      stop_sequences: request.stop_sequences,
-    }
+      const nonSystemMessages = request.messages.filter((m) => m.role !== 'system')
 
-    // Only include temperature (not top_p) to avoid API errors with newer models
-    if (request.temperature !== undefined) {
-      params.temperature = request.temperature
-    }
+      // Build request params (some models don't support both temperature and top_p)
+      const params: any = {
+        model: request.model,
+        max_tokens: request.max_tokens,
+        system: systemMessages || undefined,
+        messages: nonSystemMessages,
+        stop_sequences: request.stop_sequences,
+      }
 
-    // Add tools if provided
-    if (request.tools && request.tools.length > 0) {
-      params.tools = request.tools
-    }
+      // Only include temperature (not top_p) to avoid API errors with newer models
+      if (request.temperature !== undefined) {
+        params.temperature = request.temperature
+      }
+
+      // Add tools if provided
+      if (request.tools && request.tools.length > 0) {
+        params.tools = request.tools
+      }
 
     // Log request to file BEFORE making the call (so we have it even on error)
     const requestRef = this.logRequestToFile(params)

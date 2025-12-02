@@ -247,34 +247,71 @@ export class DiscordConnector {
         endProfile('threadParentFetch')
       }
       
-      // Now trim to firstMessageId if provided (works across all channels after .history)
+      // Extend fetch to include firstMessageId (cache marker) if provided
+      // This ensures cache stability - we fetch back far enough to include the cached portion
       if (firstMessageId) {
         logger.debug({
-          beforeTrim: messages.length,
-          allIds: messages.map(m => m.id),
+          currentMessageCount: messages.length,
           lookingFor: firstMessageId
-        }, 'About to trim to first boundary')
+        }, 'Checking if cache marker is in fetch window')
         
-        const firstIndex = messages.findIndex(m => m.id === firstMessageId)
+        let firstIndex = messages.findIndex(m => m.id === firstMessageId)
+        
+        // If not found, extend fetch backwards until we find it (or hit limit)
+        const oldestMessage = messages[0]
+        if (firstIndex < 0 && oldestMessage) {
+          const maxExtend = 500  // Maximum additional messages to fetch for cache stability
+          let extended = 0
+          let currentBefore = oldestMessage.id  // Oldest message in current window
+          
+          logger.debug({ 
+            currentBefore, 
+            maxExtend,
+            firstMessageId 
+          }, 'Cache marker not in window, extending fetch backwards')
+          
+          while (extended < maxExtend) {
+            const batch = await channel.messages.fetch({ limit: 100, before: currentBefore })
+            if (batch.size === 0) break
+            
+            const batchMessages = Array.from(batch.values()).sort((a, b) => a.id.localeCompare(b.id))
+            messages = [...batchMessages, ...messages]
+            extended += batchMessages.length
+            
+            // Check if we found the cache marker
+            firstIndex = messages.findIndex(m => m.id === firstMessageId)
+            if (firstIndex >= 0) {
+              logger.debug({ 
+                extended, 
+                firstIndex,
+                totalMessages: messages.length 
+              }, 'Found cache marker after extending fetch')
+              break
+            }
+            
+            const oldestBatch = batchMessages[0]
+            if (!oldestBatch) break
+            currentBefore = oldestBatch.id
+          }
+          
+          if (firstIndex < 0) {
+            logger.warn({ 
+              firstMessageId, 
+              extended,
+              totalMessages: messages.length,
+              oldestId: messages[0]?.id
+            }, 'Cache marker not found even after extending fetch - may have been deleted')
+          }
+        }
+        
+        // Trim to cache marker (keep messages from marker onwards)
         if (firstIndex >= 0) {
           messages = messages.slice(firstIndex)
           logger.debug({ 
             trimmedFrom: firstIndex, 
             remaining: messages.length,
-            firstMessageId,
-            foundMessageId: messages[firstIndex]?.id,
-            resultIds: messages.map(m => m.id)
-          }, 'Trimmed to API first boundary')
-        } else {
-          // Debug: log first and last few message IDs to see what we got
-          const messageIds = messages.map(m => m.id)
-          logger.warn({ 
-            firstMessageId, 
-            totalMessages: messages.length,
-            firstFewIds: messageIds.slice(0, 5),
-            lastFewIds: messageIds.slice(-5),
-            allIds: messageIds.length <= 20 ? messageIds : undefined
-          }, 'API first message not found in results')
+            firstMessageId
+          }, 'Trimmed to cache marker')
         }
       }
       
@@ -906,7 +943,7 @@ export class DiscordConnector {
       try {
       // Get or create webhook for this channel
         const webhooks = await (channel as any).fetchWebhooks()
-      let webhook = webhooks.find((wh) => wh.name === 'Chapter3-Tools')
+      let webhook = webhooks.find((wh: any) => wh.name === 'Chapter3-Tools')
 
       if (!webhook) {
         webhook = await channel.createWebhook({

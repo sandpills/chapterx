@@ -40,6 +40,13 @@ async function main() {
       configPath = emsPath  // ConfigSystem will handle the structure
       tokenFilePath = join(emsPath, botNameOverride, 'discord_token')
       logger.info({ emsPath, botName: botNameOverride }, 'Using chapter2 EMS layout')
+    } else if (botNameOverride) {
+      // Local dev with BOT_NAME override
+      configPath = process.env.CONFIG_PATH || './config'
+      tokenFilePath = process.env.DISCORD_TOKEN_FILE 
+        ? join(process.cwd(), process.env.DISCORD_TOKEN_FILE)
+        : join(configPath, 'bots', `${botNameOverride}_discord_token`)
+      logger.info({ botName: botNameOverride }, 'Using local dev layout with BOT_NAME')
     } else {
       // Default chapterx layout
       configPath = process.env.CONFIG_PATH || './config'
