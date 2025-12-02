@@ -548,6 +548,29 @@ export class AgentLoop {
       })
       endProfile('fetchContext')
       
+      // Trim messages to cached starting point for cache stability
+      // This ensures the cached prefix stays identical between requests
+      const cacheOldestId = state.cacheOldestMessageId
+      if (cacheOldestId && state.messagesSinceRoll > 0) {
+        const oldestIdx = discordContext.messages.findIndex(m => m.id === cacheOldestId)
+        if (oldestIdx > 0) {
+          // Trim messages that are older than our cached starting point
+          const beforeTrim = discordContext.messages.length
+          discordContext.messages = discordContext.messages.slice(oldestIdx)
+          logger.debug({
+            cacheOldestId,
+            trimmed: beforeTrim - discordContext.messages.length,
+            remaining: discordContext.messages.length,
+          }, 'Trimmed messages to cached starting point for cache stability')
+        } else if (oldestIdx === -1) {
+          // Cached oldest message no longer in fetch - force a roll by clearing the marker
+          logger.warn({
+            cacheOldestId,
+            fetchedMessages: discordContext.messages.length,
+          }, 'Cached oldest message not found in fetch - cache will be invalidated')
+        }
+      }
+      
       // Record raw Discord messages to trace (before any transformation)
       if (trace) {
         const rawMessages: RawDiscordMessage[] = discordContext.messages.map(msg => ({
@@ -932,7 +955,10 @@ export class AgentLoop {
       // Update message count - increment if we didn't roll, reset if we did
       if (contextResult.didRoll) {
         this.stateManager.resetMessageCount(this.botId, channelId)
-        logger.debug({ channelId }, 'Context rolled, message count reset')
+        // Record the oldest message ID for cache stability on subsequent requests
+        const oldestMessageId = discordContext.messages[0]?.id ?? null
+        this.stateManager.updateCacheOldestMessageId(this.botId, channelId, oldestMessageId)
+        logger.debug({ channelId, oldestMessageId }, 'Context rolled, recorded oldest message for cache stability')
       } else {
         this.stateManager.incrementMessageCount(this.botId, channelId)
       }

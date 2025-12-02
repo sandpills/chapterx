@@ -26,6 +26,7 @@ export class ChannelStateManager {
         toolCache,
         lastCacheMarker: null,
         messagesSinceRoll: 0,
+        cacheOldestMessageId: null,
       })
     }
 
@@ -97,6 +98,23 @@ export class ChannelStateManager {
   resetMessageCount(botId: string, channelId: string): void {
     const state = this.getState(botId, channelId)
     state.messagesSinceRoll = 0
+  }
+
+  /**
+   * Update the oldest message ID for cache stability
+   * Called when rolling to record the starting point of the cached context
+   */
+  updateCacheOldestMessageId(botId: string, channelId: string, messageId: string | null): void {
+    const state = this.getState(botId, channelId)
+    state.cacheOldestMessageId = messageId
+  }
+
+  /**
+   * Get the oldest message ID for cache stability
+   */
+  getCacheOldestMessageId(botId: string, channelId: string): string | null {
+    const state = this.getState(botId, channelId)
+    return state.cacheOldestMessageId
   }
 
   /**

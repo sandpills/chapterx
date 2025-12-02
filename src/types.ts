@@ -363,6 +363,7 @@ export interface ChannelState {
   toolCache: ToolCall[]
   lastCacheMarker: string | null  // Message ID
   messagesSinceRoll: number
+  cacheOldestMessageId: string | null  // Oldest message ID when cache was created (for stable trimming)
 }
 
 // ============================================================================
