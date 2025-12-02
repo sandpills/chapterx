@@ -66,34 +66,44 @@ const plugin: ToolPlugin = {
     },
     {
       name: 'set_config',
-      description: 'Change bot configuration by pinning a YAML .config message. For multiline values like system_prompt, use YAML block scalar syntax: key: |\\n  line1\\n  line2',
+      description: 'Change bot configuration by pinning a YAML .config message.',
       inputSchema: {
         type: 'object',
         properties: {
-          changes: {
-            type: 'object',
-            description: 'YAML-compatible config keys and values. For multiline strings, the value should start with | followed by indented lines.'
+          key: {
+            type: 'string',
+            description: 'Config key to set (e.g. system_prompt, temperature)'
+          },
+          value: {
+            type: 'string',
+            description: 'Value to set. For multiline, use actual newlines.'
           }
         },
-        required: ['changes']
+        required: ['key', 'value']
       },
       handler: async (input, context) => {
-        const { changes } = input
+        const { key, value } = input
         
-        // Validate that changes only include allowed keys (not sensitive ones)
+        if (!key || value === undefined) {
+          return 'Error: key and value are required'
+        }
+        
+        // Validate that key is not sensitive
         const forbiddenKeys = ['api_key', 'token', 'secret', 'password', 'mcp_servers', 'tool_plugins']
-        const changeKeys = Object.keys(changes)
-        const forbiddenAttempts = changeKeys.filter(k => 
-          forbiddenKeys.some(fk => k.toLowerCase().includes(fk.toLowerCase()))
-        )
+        if (forbiddenKeys.some(fk => key.toLowerCase().includes(fk.toLowerCase()))) {
+          return `Error: Cannot change sensitive key: ${key}`
+        }
         
-        if (forbiddenAttempts.length > 0) {
-          return `Error: Cannot change sensitive keys: ${forbiddenAttempts.join(', ')}`
+        // Format value for YAML - use block scalar for multiline
+        let yamlValue = value
+        if (typeof value === 'string' && value.includes('\n')) {
+          // Multiline: use YAML block scalar
+          const indented = value.split('\n').map(line => `  ${line}`).join('\n')
+          yamlValue = `|\n${indented}`
         }
         
         // Format as .config message (chapter2 format: .config TARGET\n---\nyaml)
-        const yamlLines = Object.entries(changes).map(([k, v]) => `${k}: ${typeof v === 'string' ? v : JSON.stringify(v)}`)
-        const configMessage = `.config ${context.botId}\n---\n${yamlLines.join('\n')}`
+        const configMessage = `.config ${context.botId}\n---\n${key}: ${yamlValue}`
         
         // Send and pin the config message
         const messageIds = await context.sendMessage(configMessage)
@@ -101,7 +111,7 @@ const plugin: ToolPlugin = {
           await context.pinMessage(messageIds[0]!)
         }
         
-        return `Config change pinned. Changes will apply on next message:\n${Object.entries(changes).map(([k, v]) => `  ${k}: ${JSON.stringify(v)}`).join('\n')}`
+        return `Config change pinned. ${key} will update on next message.`
       }
     }
   ]
