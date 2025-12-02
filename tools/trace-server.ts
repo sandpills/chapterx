@@ -1469,13 +1469,22 @@ const HTML = `<!DOCTYPE html>
       const renderedKeys = new Set(['system', 'messages', 'tools', 'model', 'max_tokens', 'temperature']);
       
       if (data.system) {
+        // System can be string or array with cache_control
+        const isArraySystem = Array.isArray(data.system);
+        const hasSystemCache = isArraySystem && data.system.some(b => b.cache_control);
+        const systemText = isArraySystem 
+          ? data.system.filter(b => b.type === 'text').map(b => b.text).join('\\n')
+          : (typeof data.system === 'string' ? data.system : JSON.stringify(data.system));
+        const systemCacheBadge = hasSystemCache ? '<span style="background: #10b981; color: white; font-size: 0.65rem; padding: 2px 6px; border-radius: 3px; margin-left: 8px;">📍 CACHED</span>' : '';
+        const systemCacheStyle = hasSystemCache ? 'border: 2px solid #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);' : '';
+        
         html += \`
-          <div style="margin-bottom: 20px;">
-            <div style="font-weight: 600; color: var(--accent); margin-bottom: 8px; display: flex; justify-content: space-between;">
-              <span>📋 System Prompt</span>
-              <span style="color: var(--text-muted); font-weight: normal;">\${data.system.length} chars</span>
+          <div style="margin-bottom: 20px; \${systemCacheStyle} border-radius: 8px;">
+            <div style="font-weight: 600; color: var(--accent); margin-bottom: 8px; display: flex; justify-content: space-between; padding: 8px 12px;">
+              <span>📋 System Prompt\${systemCacheBadge}</span>
+              <span style="color: var(--text-muted); font-weight: normal;">\${systemText.length} chars</span>
             </div>
-            <div style="background: var(--bg); padding: 16px; border-radius: 8px; border-left: 3px solid #6366f1; white-space: pre-wrap; font-family: inherit; line-height: 1.6;">\${escapeHtml(data.system)}</div>
+            <div style="background: var(--bg); padding: 16px; border-radius: 8px; border-left: 3px solid #6366f1; white-space: pre-wrap; font-family: inherit; line-height: 1.6;">\${escapeHtml(systemText)}</div>
           </div>
         \`;
       }
@@ -1488,11 +1497,14 @@ const HTML = `<!DOCTYPE html>
           const roleColor = role === 'user' ? '#22c55e' : role === 'assistant' ? '#6366f1' : '#f59e0b';
           const roleIcon = role === 'user' ? '👤' : role === 'assistant' ? '🤖' : '⚙️';
           
+          // Check if this message has cache_control
+          let hasCache = false;
           let content = '';
           if (typeof msg.content === 'string') {
             content = msg.content;
           } else if (Array.isArray(msg.content)) {
             for (const block of msg.content) {
+              if (block.cache_control) hasCache = true;
               if (block.type === 'text') {
                 content += block.text + '\\n';
               } else if (block.type === 'image') {
@@ -1510,10 +1522,13 @@ const HTML = `<!DOCTYPE html>
           const msgExtraKeys = Object.keys(msg).filter(k => !['role', 'content'].includes(k));
           const msgExtra = msgExtraKeys.length > 0 ? \`\\n--- Extra fields: \${JSON.stringify(Object.fromEntries(msgExtraKeys.map(k => [k, msg[k]])), null, 2)}\` : '';
           
+          const cacheBadge = hasCache ? '<span style="background: #10b981; color: white; font-size: 0.65rem; padding: 2px 6px; border-radius: 3px; margin-left: 8px;">📍 CACHED</span>' : '';
+          const cacheHighlight = hasCache ? 'border: 2px solid #10b981; box-shadow: 0 0 8px rgba(16, 185, 129, 0.3);' : '';
+          
           html += \`
-            <div style="margin-bottom: 16px; background: var(--bg); border-radius: 8px; overflow: hidden;">
+            <div style="margin-bottom: 16px; background: var(--bg); border-radius: 8px; overflow: hidden; \${cacheHighlight}">
               <div style="padding: 8px 12px; background: var(--bg-tertiary); border-left: 3px solid \${roleColor}; display: flex; justify-content: space-between; align-items: center;">
-                <span>\${roleIcon} <strong style="color: \${roleColor};">\${role}</strong>\${msgExtraKeys.length > 0 ? \` <span style="color: var(--text-muted); font-size: 0.75rem;">+\${msgExtraKeys.length} fields</span>\` : ''}</span>
+                <span>\${roleIcon} <strong style="color: \${roleColor};">\${role}</strong>\${cacheBadge}\${msgExtraKeys.length > 0 ? \` <span style="color: var(--text-muted); font-size: 0.75rem;">+\${msgExtraKeys.length} fields</span>\` : ''}</span>
                 <span style="color: var(--text-muted); font-size: 0.8rem;">\${content.length} chars</span>
               </div>
               <div style="padding: 12px; white-space: pre-wrap; font-family: inherit; line-height: 1.6; max-height: 400px; overflow-y: auto;">\${escapeHtml(content.trim() + msgExtra)}</div>
