@@ -30,6 +30,8 @@ export interface ProviderRequest {
   top_p: number
   stop_sequences?: string[]
   tools?: any[]
+  presence_penalty?: number
+  frequency_penalty?: number
 }
 
 export interface ProviderMessage {
@@ -111,6 +113,9 @@ export class LLMMiddleware {
     // Build conversation, splitting messages with images into user turns
     const messages: ProviderMessage[] = []
     const botName = request.config.botInnerName
+    const delimiter = request.config.messageDelimiter || ''  // e.g., '</s>' for base models
+    // If using delimiter, don't add newlines between messages - delimiter provides separation
+    const joiner = delimiter ? '' : '\n'
     let lastNonEmptyParticipant: string | null = null
     
     // Track conversation lines for current section
@@ -164,7 +169,7 @@ export class LLMMiddleware {
       if (hasImages && !isEmpty) {
         // Flush current assistant conversation (NO cache_control here - only at cache marker)
         if (currentConversation.length > 0) {
-          const content = currentConversation.map(e => e.text).join('\n')
+          const content = currentConversation.map(e => e.text).join(joiner)
           messages.push({
             role: 'assistant',
             content: content,
@@ -197,7 +202,7 @@ export class LLMMiddleware {
       if (hasCacheMarker && !passedCacheMarker) {
         // Flush everything before this message WITH cache_control
         if (currentConversation.length > 0) {
-          const content = currentConversation.map(e => e.text).join('\n')
+          const content = currentConversation.map(e => e.text).join(joiner)
           messages.push({
             role: 'assistant',
             content: [{ type: 'text', text: content, cache_control: { type: 'ephemeral' } }],
@@ -218,14 +223,15 @@ export class LLMMiddleware {
         continue
       } else if (isLastMessage && isEmpty) {
         // Completion target - optionally start with thinking tag
+        // Note: No delimiter here - we want the model to generate the message
         if (request.config.prefill_thinking) {
           currentConversation.push({ text: `${msg.participant}: <thinking>` })
         } else {
           currentConversation.push({ text: `${msg.participant}:` })
         }
       } else if (formatted.text) {
-        // Regular message
-        currentConversation.push({ text: `${msg.participant}: ${formatted.text}` })
+        // Regular message - append delimiter if configured (for base model completions)
+        currentConversation.push({ text: `${msg.participant}: ${formatted.text}${delimiter}` })
         if (!hasToolResult) {
           lastNonEmptyParticipant = msg.participant
         }
@@ -246,7 +252,7 @@ export class LLMMiddleware {
         if (beforeTools.length > 0) {
           messages.push({
             role: 'assistant',
-            content: beforeTools.map(e => e.text).join('\n'),
+            content: beforeTools.map(e => e.text).join(joiner),
           })
         }
         
@@ -260,14 +266,14 @@ export class LLMMiddleware {
         if (afterTools.length > 0) {
           messages.push({
             role: 'assistant',
-            content: afterTools.map(e => e.text).join('\n'),
+            content: afterTools.map(e => e.text).join(joiner),
           })
         }
       } else {
         // Short conversation - just add everything (no cache_control - we're past marker or none exists)
         messages.push({
           role: 'assistant',
-          content: currentConversation.map(e => e.text).join('\n'),
+          content: currentConversation.map(e => e.text).join(joiner),
         })
       }
     }
@@ -280,6 +286,8 @@ export class LLMMiddleware {
       top_p: request.config.top_p,
       stop_sequences: request.stop_sequences,
       tools: undefined,  // Don't use native tool use in prefill mode
+      presence_penalty: request.config.presence_penalty,
+      frequency_penalty: request.config.frequency_penalty,
     }
   }
 
@@ -362,6 +370,8 @@ export class LLMMiddleware {
       max_tokens: request.config.max_tokens,
       top_p: request.config.top_p,
       tools: request.tools,
+      presence_penalty: request.config.presence_penalty,
+      frequency_penalty: request.config.frequency_penalty,
     }
   }
 

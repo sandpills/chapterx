@@ -14,6 +14,7 @@ import { ContextBuilder } from './context/builder.js'
 import { LLMMiddleware } from './llm/middleware.js'
 import { AnthropicProvider } from './llm/providers/anthropic.js'
 import { OpenAIProvider } from './llm/providers/openai.js'
+import { OpenAICompletionsProvider } from './llm/providers/openai-completions.js'
 import { ToolSystem } from './tools/system.js'
 import { ApiServer } from './api/server.js'
 import { logger } from './utils/logger.js'
@@ -99,7 +100,7 @@ async function main() {
         logger.info({ vendorName }, 'Registered Anthropic provider')
       }
       
-      // OpenAI-compatible provider
+      // OpenAI-compatible provider (chat completions)
       if (config?.openai_api_key) {
         const baseUrl = config.openai_base_url || config.api_base
         if (!baseUrl) {
@@ -113,6 +114,22 @@ async function main() {
         // Register with vendor name so middleware can route correctly
         llmMiddleware.registerProvider(provider, vendorName)
         logger.info({ vendorName, baseUrl }, 'Registered OpenAI provider')
+      }
+      
+      // OpenAI Completions provider (base models - /v1/completions endpoint)
+      if (config?.openai_completions_api_key) {
+        const baseUrl = config.openai_completions_base_url || config.openai_base_url || config.api_base
+        if (!baseUrl) {
+          logger.warn({ vendorName }, 'Skipping OpenAI Completions vendor without base_url')
+          continue
+        }
+        const provider = new OpenAICompletionsProvider({
+          apiKey: config.openai_completions_api_key,
+          baseUrl,
+        })
+        // Register with vendor name so middleware can route correctly
+        llmMiddleware.registerProvider(provider, vendorName)
+        logger.info({ vendorName, baseUrl }, 'Registered OpenAI Completions provider (base model)')
       }
     }
 
