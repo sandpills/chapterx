@@ -21,7 +21,17 @@ vendors:
   # openai:
   #   config:
   #     openai_api_key: "sk-..."
+  #     openai_base_url: "https://api.openai.com/v1"
   #   provides:
   #     - "gpt-4.*"
   #     - "gpt-3.5-turbo"
-
+  
+  # OpenAI Compatable Completions API for base/foundation models
+  # Uses /v1/completions endpoint (prompt in, text continuation out)
+  # Supports prefill mode only - no chat roles
+  # base-model-provider:
+  #   config:
+  #     openai_completions_api_key: "sk-..."
+  #     openai_completions_base_url: "https://api.example.com/v1"
+  #   provides:
+  #     - "my-base-model-.*"
