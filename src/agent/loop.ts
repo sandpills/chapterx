@@ -292,7 +292,49 @@ export class AgentLoop {
   }
 
   private isSystemDiscordMessage(message: any): boolean {
+    // NOTE: Keep this conservative for now. We previously tried to infer
+    // system-ness from Discord's type codes, but that misclassified
+    // legitimate replies. If we see regressions, revisit the more
+    // elaborate version that inspects message.type for non-0/19 values.
     return Boolean(message?.system)
+  }
+
+  private async collectPinnedConfigsWithInheritance(channelId: string, baseConfigs: string[]): Promise<string[]> {
+    const mergedConfigs: string[] = []
+    const parentChain = await this.buildParentChannelChain(channelId)
+    const seen = new Set<string>([channelId])
+
+    for (const ancestorId of parentChain) {
+      if (seen.has(ancestorId)) {
+        continue
+      }
+      seen.add(ancestorId)
+      const ancestorConfigs = await this.connector.fetchPinnedConfigs(ancestorId)
+      if (ancestorConfigs.length > 0) {
+        mergedConfigs.push(...ancestorConfigs)
+      }
+    }
+
+    mergedConfigs.push(...baseConfigs)
+    return mergedConfigs
+  }
+
+  private async buildParentChannelChain(channelId: string, maxDepth: number = 10): Promise<string[]> {
+    const chain: string[] = []
+    const visited = new Set<string>([channelId])
+    let currentId = channelId
+
+    for (let depth = 0; depth < maxDepth; depth++) {
+      const parentId = await this.connector.getParentChannelId(currentId)
+      if (!parentId || visited.has(parentId)) {
+        break
+      }
+      chain.push(parentId)
+      visited.add(parentId)
+      currentId = parentId
+    }
+
+    return chain.reverse()
   }
 
   /**
@@ -426,10 +468,14 @@ export class AgentLoop {
         if (!config) {
           try {
             const configFetch = await this.connector.fetchContext({ channelId, depth: 10 })
+            const inheritedPinnedConfigs = await this.collectPinnedConfigsWithInheritance(
+              channelId,
+              configFetch.pinnedConfigs
+            )
             config = this.configSystem.loadConfig({
               botName: this.botId,
               guildId,
-              channelConfigs: configFetch.pinnedConfigs,
+              channelConfigs: inheritedPinnedConfigs,
             })
           } catch (error) {
             logger.warn({ error }, 'Failed to load config for chain depth check')
@@ -469,10 +515,14 @@ export class AgentLoop {
         // Load config once for this batch
         try {
           const configFetch = await this.connector.fetchContext({ channelId, depth: 10 })
+          const inheritedPinnedConfigs = await this.collectPinnedConfigsWithInheritance(
+            channelId,
+            configFetch.pinnedConfigs
+          )
           config = this.configSystem.loadConfig({
             botName: this.botId,
             guildId,
-            channelConfigs: configFetch.pinnedConfigs,
+            channelConfigs: inheritedPinnedConfigs,
           })
         } catch (error) {
           logger.warn({ error }, 'Failed to load config for random check')
@@ -533,10 +583,14 @@ export class AgentLoop {
       // 2. Calculate fetch depth from config (fetch pinned configs first - fast single API call)
       startProfile('pinnedConfigFetch')
       const pinnedConfigs = await this.connector.fetchPinnedConfigs(channelId)
+      const inheritedPinnedConfigs = await this.collectPinnedConfigsWithInheritance(
+        channelId,
+        pinnedConfigs
+      )
       const preConfig = this.configSystem.loadConfig({
         botName: this.botId,
         guildId,
-        channelConfigs: pinnedConfigs,
+        channelConfigs: inheritedPinnedConfigs,
       })
       endProfile('pinnedConfigFetch')
       
@@ -613,7 +667,7 @@ export class AgentLoop {
       const config = this.configSystem.loadConfig({
         botName: this.botId,
         guildId: discordContext.guildId,
-        channelConfigs: discordContext.pinnedConfigs,
+        channelConfigs: inheritedPinnedConfigs,
       })
       endProfile('configLoad')
 

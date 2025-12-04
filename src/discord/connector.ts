@@ -764,6 +764,22 @@ export class DiscordConnector {
     return allMessages
   }
 
+  /**
+   * Resolve the parent channel ID for a given thread.
+   * Returns undefined for regular text channels.
+   */
+  async getParentChannelId(channelId: string): Promise<string | undefined> {
+    try {
+      const channel: any = await this.client.channels.fetch(channelId)
+      if (channel?.isThread?.()) {
+        return channel.parentId || undefined
+      }
+    } catch (error) {
+      logger.warn({ error, channelId }, 'Failed to resolve parent channel')
+    }
+    return undefined
+  }
+
   private extractMessageIdFromUrl(url: string): string | null {
     // Discord URL format: https://discord.com/channels/guild_id/channel_id/message_id
     const match = url.match(/\/channels\/\d+\/\d+\/(\d+)/)
