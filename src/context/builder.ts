@@ -18,6 +18,10 @@ import {
 } from '../types.js'
 import { Activation, Completion } from '../activation/index.js'
 import { logger } from '../utils/logger.js'
+import sharp from 'sharp'
+
+// Anthropic's per-image base64 limit is 5MB
+const MAX_IMAGE_BASE64_BYTES = 5 * 1024 * 1024
 import { 
   ContextBuildInfo, 
   ContextMessageInfo,
@@ -51,7 +55,7 @@ export class ContextBuilder {
   /**
    * Build LLM request from Discord context
    */
-  buildContext(params: BuildContextParams): ContextBuildResultWithTrace {
+  async buildContext(params: BuildContextParams): Promise<ContextBuildResultWithTrace> {
     const { discordContext, toolCacheWithResults, lastCacheMarker, messagesSinceRoll, config, botDiscordUsername, activations, pluginInjections } = params
     const originalMessageCount = discordContext.messages.length
 
@@ -79,7 +83,7 @@ export class ContextBuilder {
     const filteredCount = beforeFilter - messages.length
 
     // 3. Convert to participant messages (limits applied later on final context)
-    const participantMessages = this.formatMessages(
+    const participantMessages = await this.formatMessages(
       messages,
       discordContext.images,
       discordContext.documents,
@@ -589,12 +593,12 @@ export class ContextBuilder {
     return markerId
   }
 
-  private formatMessages(
+  private async formatMessages(
     messages: DiscordMessage[],
     images: CachedImage[],
     documents: CachedDocument[],
     config: BotConfig
-  ): ParticipantMessage[] {
+  ): Promise<ParticipantMessage[]> {
     const participantMessages: ParticipantMessage[] = []
 
     // Create image lookup
@@ -694,14 +698,35 @@ export class ContextBuilder {
             const cached = imageMap.get(attachment.url)
             
             if (cached) {
-              const base64Data = cached.data.toString('base64')
+              // Check if image needs resampling (exceeds Anthropic's 5MB per-image limit)
+              let imageData = cached.data
+              let mediaType = cached.mediaType
+              const originalBase64Size = imageData.length * 4 / 3  // Approximate base64 size
+              
+              if (originalBase64Size > MAX_IMAGE_BASE64_BYTES) {
+                try {
+                  const resampled = await this.resampleImage(imageData, MAX_IMAGE_BASE64_BYTES)
+                  imageData = resampled.data
+                  mediaType = resampled.mediaType
+                  logger.info({
+                    messageId: msg.id,
+                    originalMB: (originalBase64Size / 1024 / 1024).toFixed(2),
+                    resampledMB: (imageData.length * 4 / 3 / 1024 / 1024).toFixed(2),
+                  }, 'Resampled oversized image')
+                } catch (error) {
+                  logger.warn({ error, messageId: msg.id }, 'Failed to resample image, skipping')
+                  continue
+                }
+              }
+              
+              const base64Data = imageData.toString('base64')
               
               content.push({
                 type: 'image',
                 source: {
                   type: 'base64',
                   data: base64Data,
-                  media_type: cached.mediaType,  // Anthropic API uses snake_case
+                  media_type: mediaType,  // Anthropic API uses snake_case
                 },
               })
               
@@ -785,6 +810,73 @@ export class ContextBuilder {
         const pos = imagePositions[i]!
         messages[pos.msgIndex]!.content.splice(pos.contentIndex, 1)
       }
+    }
+  }
+
+  /**
+   * Resample an image to fit within the target base64 size limit.
+   * Uses progressive quality reduction and resizing.
+   */
+  private async resampleImage(
+    data: Buffer,
+    maxBase64Bytes: number
+  ): Promise<{ data: Buffer; mediaType: string }> {
+    // Target raw bytes (base64 adds ~33% overhead)
+    const targetBytes = Math.floor(maxBase64Bytes * 0.75)
+    
+    let image = sharp(data)
+    const metadata = await image.metadata()
+    
+    // Start with original dimensions
+    let width = metadata.width || 1920
+    let height = metadata.height || 1080
+    let quality = 85
+    
+    // Convert to JPEG for better compression (unless it's a PNG with transparency)
+    const hasAlpha = metadata.hasAlpha
+    const outputFormat = hasAlpha ? 'png' : 'jpeg'
+    
+    // Iteratively reduce size until under limit
+    for (let attempt = 0; attempt < 5; attempt++) {
+      image = sharp(data).resize(width, height, { fit: 'inside', withoutEnlargement: true })
+      
+      let output: Buffer
+      if (outputFormat === 'jpeg') {
+        output = await image.jpeg({ quality, mozjpeg: true }).toBuffer()
+      } else {
+        output = await image.png({ compressionLevel: 9 }).toBuffer()
+      }
+      
+      // Check if under limit
+      if (output.length <= targetBytes) {
+        return { 
+          data: output, 
+          mediaType: outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png' 
+        }
+      }
+      
+      // Reduce quality or dimensions for next attempt
+      if (quality > 50) {
+        quality -= 15
+      } else {
+        // Reduce dimensions by 20%
+        width = Math.floor(width * 0.8)
+        height = Math.floor(height * 0.8)
+        quality = 75  // Reset quality when reducing size
+      }
+    }
+    
+    // Final attempt: aggressive resize
+    const finalImage = sharp(data)
+      .resize(Math.floor(width * 0.5), Math.floor(height * 0.5), { fit: 'inside' })
+    
+    const finalOutput = outputFormat === 'jpeg' 
+      ? await finalImage.jpeg({ quality: 60 }).toBuffer()
+      : await finalImage.png({ compressionLevel: 9 }).toBuffer()
+    
+    return { 
+      data: finalOutput, 
+      mediaType: outputFormat === 'jpeg' ? 'image/jpeg' : 'image/png' 
     }
   }
 
@@ -927,9 +1019,10 @@ export class ContextBuilder {
         }, 'Injected full completion into bot message')
       } else if (msg.messageId && msg.participant === botName) {
         // Log why we didn't inject with more detail
+        const msgId = msg.messageId  // Narrow type for TypeScript
         const mapKeys = Array.from(completionMap.keys())
-        const exactMatch = mapKeys.find(k => k === msg.messageId)
-        const includesMatch = mapKeys.find(k => k.includes(msg.messageId) || msg.messageId.includes(k))
+        const exactMatch = mapKeys.find(k => k === msgId)
+        const includesMatch = mapKeys.find(k => k.includes(msgId) || msgId.includes(k))
         logger.debug({
           messageId: msg.messageId,
           messageIdType: typeof msg.messageId,

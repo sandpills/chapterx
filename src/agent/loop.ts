@@ -851,7 +851,7 @@ export class AgentLoop {
         pluginInjections,
       }
 
-      const contextResult = this.contextBuilder.buildContext(buildParams)
+      const contextResult = await this.contextBuilder.buildContext(buildParams)
 
       // Add tools if enabled
       if (config.tools_enabled) {
