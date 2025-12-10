@@ -455,6 +455,14 @@ export class LLMMiddleware {
   private static readonly FUNCTION_OPEN = '<' + 'function>'
   private static readonly FUNCTION_CLOSE = '</' + 'function>'
 
+  // Additional Anthropic-style constants for invoke/parameter tags
+  private static readonly INVOKE_OPEN_EX = '<' + 'antml:invoke name="'
+  private static readonly INVOKE_CLOSE_EX = '</' + 'antml:invoke>'
+  private static readonly PARAM_OPEN_EX = '<' + 'antml:parameter name="'
+  private static readonly PARAM_CLOSE_EX = '</' + 'antml:parameter>'
+  private static readonly FUNC_CALLS_OPEN_EX = '<' + 'antml:function_calls>'
+  private static readonly FUNC_CALLS_CLOSE_EX = '</' + 'antml:function_calls>'
+
   private formatToolsForPrefill(tools: any[]): string {
     // Format each tool as JSON inside <function> tags (Anthropic's actual format)
     const formatted = tools.map((tool) => {
@@ -466,9 +474,19 @@ export class LLMMiddleware {
       return `${LLMMiddleware.FUNCTION_OPEN}${JSON.stringify(toolDef)}${LLMMiddleware.FUNCTION_CLOSE}`
     })
 
+    // Build instruction with example
+    const instruction = `
+When making function calls using tools that accept array or object parameters ensure those are structured using JSON. For example:
+${LLMMiddleware.FUNC_CALLS_OPEN_EX}
+${LLMMiddleware.INVOKE_OPEN_EX}example_complex_tool">
+${LLMMiddleware.PARAM_OPEN_EX}parameter">[{"color": "orange", "options": {"key": true}}]${LLMMiddleware.PARAM_CLOSE_EX}
+${LLMMiddleware.INVOKE_CLOSE_EX}
+${LLMMiddleware.FUNC_CALLS_CLOSE_EX}`
+
     return `${LLMMiddleware.FUNCTIONS_OPEN}
 ${formatted.join('\n')}
-${LLMMiddleware.FUNCTIONS_CLOSE}`
+${LLMMiddleware.FUNCTIONS_CLOSE}
+${instruction}`
   }
   
 }
