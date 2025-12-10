@@ -9,7 +9,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { ToolDefinition, ToolCall, ToolResult, ToolError, MCPServerConfig } from '../types.js'
 import { logger } from '../utils/logger.js'
-import { availablePlugins, PluginTool, PluginContext, ToolPlugin, PluginStateContext } from './plugins/index.js'
+import { availablePlugins, PluginTool, PluginContext, ToolPlugin } from './plugins/index.js'
 
 export class ToolSystem {
   private mcpClients = new Map<string, Client>()
@@ -268,10 +268,6 @@ export class ToolSystem {
   // Anthropic-style XML tag constants (assembled to avoid triggering stop sequences)
   private static readonly FUNC_CALLS_OPEN = '<' + 'antml:function_calls>'
   private static readonly FUNC_CALLS_CLOSE = '</' + 'antml:function_calls>'
-  private static readonly INVOKE_OPEN = '<' + 'antml:invoke'
-  private static readonly INVOKE_CLOSE = '</' + 'antml:invoke>'
-  private static readonly PARAM_OPEN = '<' + 'antml:parameter'
-  private static readonly PARAM_CLOSE = '</' + 'antml:parameter>'
   private static readonly FUNC_RESULTS_OPEN = '<' + 'function_results>'
   private static readonly FUNC_RESULTS_CLOSE = '</' + 'function_results>'
 
@@ -366,7 +362,7 @@ export class ToolSystem {
   /**
    * Format tool result for injection into completion (Anthropic style)
    */
-  formatToolResultForInjection(toolName: string, result: string): string {
+  formatToolResultForInjection(_toolName: string, result: string): string {
     return '\n\n' + ToolSystem.FUNC_RESULTS_OPEN + '\n' + result + '\n' + ToolSystem.FUNC_RESULTS_CLOSE + '\n\n'
   }
 

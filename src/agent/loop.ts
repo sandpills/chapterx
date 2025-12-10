@@ -1085,8 +1085,8 @@ export class AgentLoop {
     llmRequest: any,
     config: BotConfig,
     channelId: string,
-    triggeringMessageId: string,
-    activationId?: string
+    _triggeringMessageId: string,
+    _activationId?: string
   ): Promise<{ completion: any; toolCallIds: string[]; preambleMessageIds: string[] }> {
     let accumulatedOutput = ''
     let toolDepth = 0

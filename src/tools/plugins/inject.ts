@@ -20,11 +20,10 @@
  * ```
  */
 
-import { ToolPlugin, ContextInjection } from '../../types.js'
-import { PluginStateContext } from './types.js'
+import { ToolPlugin, ContextInjection, PluginStateContext } from './types.js'
 import { createLogger } from '../../utils/logger.js'
 
-const logger = createLogger('plugin:inject')
+const logger = createLogger({ plugin: 'inject' })
 
 interface InjectionConfig {
   id: string

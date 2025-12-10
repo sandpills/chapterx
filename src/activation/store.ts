@@ -5,14 +5,13 @@
  * Similar structure to tool cache but for complete activation records.
  */
 
-import { existsSync, mkdirSync, readFileSync, appendFileSync, readdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { logger } from '../utils/logger.js'
 import { 
   Activation, 
   StoredActivation, 
   Completion, 
-  ActivationIndexEntry,
   ToolCall,
   ToolResult 
 } from './types.js'

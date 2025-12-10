@@ -450,154 +450,26 @@ export class LLMMiddleware {
   }
 
   // Anthropic-style XML tag constants (assembled to avoid triggering stop sequences)
-  private static readonly FUNC_CALLS_OPEN = '<' + 'antml:function_calls>'
-  private static readonly FUNC_CALLS_CLOSE = '</' + 'antml:function_calls>'
-  private static readonly INVOKE_OPEN = '<' + 'antml:invoke name="'
-  private static readonly INVOKE_CLOSE = '</' + 'antml:invoke>'
-  private static readonly PARAM_OPEN = '<' + 'antml:parameter name="'
-  private static readonly PARAM_CLOSE = '</' + 'antml:parameter>'
+  private static readonly FUNCTIONS_OPEN = '<' + 'functions>'
+  private static readonly FUNCTIONS_CLOSE = '</' + 'functions>'
+  private static readonly FUNCTION_OPEN = '<' + 'function>'
+  private static readonly FUNCTION_CLOSE = '</' + 'function>'
 
   private formatToolsForPrefill(tools: any[]): string {
+    // Format each tool as JSON inside <function> tags (Anthropic's actual format)
     const formatted = tools.map((tool) => {
-      // Generate concise description
-      const desc = this.conciseDescription(tool.description)
-      
-      // Generate example in Anthropic XML format
-      const example = this.schemaToExample(tool.inputSchema)
-      const exampleParams = Object.entries(example)
-        .map(([key, value]) => {
-          const valStr = typeof value === 'string' ? value : JSON.stringify(value)
-          return `${LLMMiddleware.PARAM_OPEN}${key}">${valStr}${LLMMiddleware.PARAM_CLOSE}`
-        })
-        .join('\n')
-      
-      return `**${tool.name}** - ${desc}
-${LLMMiddleware.INVOKE_OPEN}${tool.name}">
-${exampleParams}
-${LLMMiddleware.INVOKE_CLOSE}`
+      const toolDef = {
+        description: tool.description,
+        name: tool.name,
+        parameters: tool.inputSchema || { type: 'object', properties: {} }
+      }
+      return `${LLMMiddleware.FUNCTION_OPEN}${JSON.stringify(toolDef)}${LLMMiddleware.FUNCTION_CLOSE}`
     })
 
-    return `<tools>
-Tool calls are executed inline - results appear immediately after the call.
-Wrap calls in ${LLMMiddleware.FUNC_CALLS_OPEN}...${LLMMiddleware.FUNC_CALLS_CLOSE}
-
-${formatted.join('\n\n')}
-
-Example:
-${LLMMiddleware.FUNC_CALLS_OPEN}
-${LLMMiddleware.INVOKE_OPEN}tool_name">
-${LLMMiddleware.PARAM_OPEN}param">value${LLMMiddleware.PARAM_CLOSE}
-${LLMMiddleware.INVOKE_CLOSE}
-${LLMMiddleware.FUNC_CALLS_CLOSE}
-</tools>`
+    return `${LLMMiddleware.FUNCTIONS_OPEN}
+${formatted.join('\n')}
+${LLMMiddleware.FUNCTIONS_CLOSE}`
   }
   
-  private conciseDescription(desc: string): string {
-    if (!desc) return ''
-    
-    // Take first sentence
-    let result = desc.split(/[.!]/)[0] || desc
-    
-    // Remove fluff phrases
-    const fluff = [
-      /^(This tool |Tool to |A tool that |Allows you to |Used to |Use this to )/i,
-      /\s*(using|via|through) the \w+ API/gi,
-      /\s*and returns? .*$/i,
-    ]
-    for (const pattern of fluff) {
-      result = result.replace(pattern, '')
-    }
-    
-    // Trim and capitalize
-    result = result.trim()
-    if (result.length > 80) {
-      result = result.slice(0, 77) + '...'
-    }
-    
-    return result
-  }
-  
-  private schemaToExample(schema: any): any {
-    if (!schema) return {}
-    
-    const props = schema.properties || {}
-    const required = schema.required || []
-    
-    // Only include required props, or first 2 if none required
-    const propsToInclude = required.length > 0 
-      ? required 
-      : Object.keys(props).slice(0, 2)
-    
-    const example: any = {}
-    for (const key of propsToInclude) {
-      const propSchema = props[key]
-      if (propSchema) {
-        example[key] = this.schemaValueExample(propSchema, key)
-      }
-    }
-    
-    return example
-  }
-  
-  private schemaValueExample(schema: any, name: string): any {
-    if (!schema) return '...'
-    
-    const type = schema.type
-    
-    // Check for enum - use first value
-    if (schema.enum && schema.enum.length > 0) {
-      return schema.enum[0]
-    }
-    
-    // Check description for examples like "e.g., system, user, assistant"
-    const desc = schema.description || ''
-    const egMatch = desc.match(/e\.?g\.?,?\s*['"]?(\w+)['"]?/i)
-    if (egMatch && type === 'string') {
-      return egMatch[1]
-    }
-    
-    switch (type) {
-      case 'string':
-        // Use contextual placeholder based on name
-        if (name.includes('url') || name.includes('path')) return 'https://...'
-        if (name.includes('query') || name.includes('question') || name.includes('content')) return '...'
-        if (name.includes('name')) return 'example'
-        return '...'
-      
-      case 'number':
-      case 'integer':
-        return 1
-      
-      case 'boolean':
-        return true
-      
-      case 'array':
-        // Generate one example item
-        const itemSchema = schema.items
-        if (itemSchema) {
-          return [this.schemaValueExample(itemSchema, name)]
-        }
-        return ['...']
-      
-      case 'object':
-        // Recurse into nested object
-        const nestedProps = schema.properties || {}
-        const nestedRequired = schema.required || []
-        const nestedKeys = nestedRequired.length > 0 
-          ? nestedRequired.slice(0, 3)
-          : Object.keys(nestedProps).slice(0, 3)
-        
-        const obj: any = {}
-        for (const k of nestedKeys) {
-          if (nestedProps[k]) {
-            obj[k] = this.schemaValueExample(nestedProps[k], k)
-          }
-        }
-        return obj
-      
-      default:
-        return '...'
-    }
-  }
 }
 

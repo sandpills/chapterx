@@ -74,14 +74,15 @@ export class ApiServer {
     this.app.use(express.json())
     
     // CORS headers for cross-origin requests
-    this.app.use((req: Request, res: Response, next: NextFunction) => {
+    this.app.use((req: Request, res: Response, next: NextFunction): void => {
       res.header('Access-Control-Allow-Origin', '*')
       res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
       res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization')
       
       // Handle preflight requests
       if (req.method === 'OPTIONS') {
-        return res.sendStatus(200)
+        res.sendStatus(200)
+        return
       }
       next()
     })

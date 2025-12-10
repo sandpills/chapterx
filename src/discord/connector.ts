@@ -960,8 +960,9 @@ export class DiscordConnector {
       const channel = await this.client.channels.fetch(channelId) as TextChannel
 
       // Threads don't support webhooks directly - fall back to regular messages
-      if (!channel || !channel.isTextBased() || channel.isThread()) {
-        logger.debug({ channelId, isThread: channel?.isThread?.() }, 'Channel does not support webhooks, using regular message')
+      const isThread = 'isThread' in channel && typeof channel.isThread === 'function' ? channel.isThread() : false
+      if (!channel || !channel.isTextBased() || isThread) {
+        logger.debug({ channelId, isThread }, 'Channel does not support webhooks, using regular message')
         await this.sendMessage(channelId, content)
         return
       }
