@@ -610,9 +610,10 @@ export class ContextBuilder {
     }
     
     // Track image count and total base64 payload size to stay under API limits
-    // Anthropic has ~10MB total request limit, we want to keep images under 3-4MB
+    // Anthropic has ~10MB total request limit, we allow up to 8MB for images
+    // TODO: Add image resampling for images that exceed this limit
     const max_images = config.max_images || 5
-    const maxTotalBase64Bytes = 3 * 1024 * 1024  // 3 MB total base64 data for images
+    const maxTotalBase64Bytes = 8 * 1024 * 1024  // 8 MB total base64 data for images
     
     logger.debug({
       messageCount: messages.length,
@@ -630,14 +631,6 @@ export class ContextBuilder {
       let imageCount = 0
       let totalBase64Size = 0
       
-      // Debug: Log last few messages to understand iteration order
-      const lastFewMsgs = messages.slice(-3).map(m => ({
-        id: m.id,
-        hasAttachments: m.attachments.length,
-        attachmentUrls: m.attachments.map(a => a.url?.slice(-40))
-      }))
-      logger.debug({ lastFewMsgs, totalMessages: messages.length }, 'DEBUG: Last messages before pre-selection')
-      
       for (let i = messages.length - 1; i >= 0 && imageCount < max_images; i--) {
         const msg = messages[i]!
         for (const attachment of msg.attachments) {
@@ -645,15 +638,6 @@ export class ContextBuilder {
           
           if (attachment.contentType?.startsWith('image/')) {
             const cached = imageMap.get(attachment.url)
-            // Debug: Log when checking newest message's image
-            if (i === messages.length - 1) {
-              logger.debug({
-                messageId: msg.id,
-                attachmentUrl: attachment.url?.slice(-50),
-                inImageMap: !!cached,
-                imageMapSize: imageMap.size
-              }, 'DEBUG: Checking newest message image')
-            }
             if (cached) {
               const base64Size = cached.data.toString('base64').length
               
