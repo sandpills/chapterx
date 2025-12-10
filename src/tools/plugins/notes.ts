@@ -61,7 +61,7 @@ const plugin: ToolPlugin = {
       handler: async (_input: any, context: PluginContext) => {
         // This would use PluginStateContext.getState('channel') in practice
         logger.debug({ channelId: context.channelId }, 'Notes list requested')
-        return 'Notes are displayed in the context above. Use save_note to add new notes.'
+        return 'Use save_note to add new notes.'
       },
     },
     {
