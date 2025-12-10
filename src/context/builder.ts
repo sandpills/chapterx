@@ -613,7 +613,7 @@ export class ContextBuilder {
     // Anthropic has ~10MB total request limit, we allow up to 8MB for images
     // TODO: Add image resampling for images that exceed this limit
     const max_images = config.max_images || 5
-    const maxTotalBase64Bytes = 8 * 1024 * 1024  // 8 MB total base64 data for images
+    const maxTotalBase64Bytes = 15 * 1024 * 1024  // 8 MB total base64 data for images
     
     logger.debug({
       messageCount: messages.length,
