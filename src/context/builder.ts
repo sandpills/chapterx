@@ -1336,10 +1336,11 @@ export class ContextBuilder {
     }
 
     // Add participant names with colon
-    // In prefill mode, participant names appear after newlines, so include both variants
+    // In prefill mode, participant names always appear after newlines
+    // Only use \n-prefixed versions to avoid wasting stop sequence slots
+    // (non-prefixed would be redundant since it's a substring match)
     for (const participant of recentParticipants) {
-      sequences.push(`${participant}:`)
-      sequences.push(`\n${participant}:`)  // Also match with leading newline
+      sequences.push(`\n${participant}:`)
     }
 
     // Add system message prefixes (bot should never generate these)
