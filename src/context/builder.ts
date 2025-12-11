@@ -974,7 +974,20 @@ export class ContextBuilder {
       messageCount: messages.length,
     }, 'Starting activation completion injection')
     
-    // Build a map of messageId -> completion
+    // Build unified messageContexts map from all activations (new per-message context system)
+    const messageContextsMap = new Map<string, string>()
+    // Also track which activation each message belongs to (for consecutive merging)
+    const messageToActivationId = new Map<string, string>()
+    for (const activation of activations) {
+      if (activation.messageContexts) {
+        for (const [msgId, contextChunk] of Object.entries(activation.messageContexts)) {
+          messageContextsMap.set(msgId, contextChunk)
+          messageToActivationId.set(msgId, activation.id)
+        }
+      }
+    }
+    
+    // Build a map of messageId -> completion (legacy fallback for activations without messageContexts)
     const completionMap = new Map<string, { activation: Activation; completion: Completion }>()
     for (const activation of activations) {
       for (const completion of activation.completions) {
@@ -985,9 +998,10 @@ export class ContextBuilder {
     }
     
     logger.debug({
+      messageContextsCount: messageContextsMap.size,
       completionMapSize: completionMap.size,
       completionMapKeys: Array.from(completionMap.keys()),
-    }, 'Built completion map')
+    }, 'Built context maps')
     
     // Build phantom insertions: messageId -> completions to insert after
     const phantomInsertions = new Map<string, Completion[]>()
@@ -1020,16 +1034,27 @@ export class ContextBuilder {
     for (let i = messages.length - 1; i >= 0; i--) {
       const msg = messages[i]!
       
-      // Check if this message has a full completion to inject
-      if (msg.messageId && msg.participant === botName && completionMap.has(msg.messageId)) {
+      // Check if this message has a context chunk to inject (new per-message system)
+      if (msg.messageId && msg.participant === botName && messageContextsMap.has(msg.messageId)) {
+        const contextChunk = messageContextsMap.get(msg.messageId)!
+        // Replace content with per-message context chunk
+        msg.content = [{ type: 'text', text: contextChunk }]
+        logger.debug({ 
+          messageId: msg.messageId, 
+          contextLength: contextChunk.length,
+          hasToolXml: contextChunk.includes('function_calls'),
+        }, 'Injected per-message context chunk')
+      }
+      // Fallback: check legacy completion map (for activations without messageContexts)
+      else if (msg.messageId && msg.participant === botName && completionMap.has(msg.messageId)) {
         const { completion } = completionMap.get(msg.messageId)!
-        // Replace content with full completion text
+        // Replace content with full completion text (legacy behavior)
         msg.content = [{ type: 'text', text: completion.text }]
         logger.debug({ 
           messageId: msg.messageId, 
           originalLength: msg.content[0]?.type === 'text' ? (msg.content[0] as any).text?.length : 0,
           newLength: completion.text.length 
-        }, 'Injected full completion into bot message')
+        }, 'Injected full completion into bot message (legacy)')
       } else if (msg.messageId && msg.participant === botName) {
         // Log why we didn't inject with more detail
         const msgId = msg.messageId  // Narrow type for TypeScript
@@ -1040,6 +1065,7 @@ export class ContextBuilder {
           messageId: msg.messageId,
           messageIdType: typeof msg.messageId,
           participant: msg.participant,
+          inMessageContexts: messageContextsMap.has(msg.messageId),
           inCompletionMap: completionMap.has(msg.messageId),
           mapKeyCount: mapKeys.length,
           exactMatch: exactMatch || 'none',
@@ -1064,6 +1090,72 @@ export class ContextBuilder {
           phantomCount: phantomMessages.length 
         }, 'Inserted phantom completions')
       }
+    }
+    
+    // MERGE CONSECUTIVE MESSAGES from same activation to avoid spurious prefixes
+    // Forward pass: merge consecutive bot messages that belong to the same activation
+    const indicesToRemove: number[] = []
+    let i = 0
+    while (i < messages.length) {
+      const msg = messages[i]!
+      
+      // Only process bot messages with messageContexts entries
+      if (msg.participant !== botName || !msg.messageId || !messageToActivationId.has(msg.messageId)) {
+        i++
+        continue
+      }
+      
+      const activationId = messageToActivationId.get(msg.messageId)!
+      let mergedContent = msg.content[0]?.type === 'text' ? (msg.content[0] as any).text : ''
+      let mergeCount = 0
+      
+      // Look ahead for consecutive messages from same activation
+      let j = i + 1
+      while (j < messages.length) {
+        const nextMsg = messages[j]!
+        
+        // Must be same participant and same activation
+        if (nextMsg.participant !== botName || 
+            !nextMsg.messageId || 
+            messageToActivationId.get(nextMsg.messageId) !== activationId) {
+          break
+        }
+        
+        // Merge this message's content (context chunk) into the first
+        const nextContent = nextMsg.content[0]?.type === 'text' ? (nextMsg.content[0] as any).text : ''
+        if (nextContent) {
+          mergedContent += nextContent  // Concatenate context chunks
+        }
+        
+        // Mark for removal
+        indicesToRemove.push(j)
+        mergeCount++
+        j++
+      }
+      
+      // If we merged anything, update the first message's content
+      if (mergeCount > 0) {
+        msg.content = [{ type: 'text', text: mergedContent }]
+        logger.debug({
+          primaryMessageId: msg.messageId,
+          mergedCount: mergeCount,
+          totalLength: mergedContent.length,
+        }, 'Merged consecutive activation messages')
+      }
+      
+      i = j  // Skip past merged messages
+    }
+    
+    // Remove merged messages (in reverse order to avoid index shifting)
+    for (let k = indicesToRemove.length - 1; k >= 0; k--) {
+      messages.splice(indicesToRemove[k]!, 1)
+    }
+    
+    if (indicesToRemove.length > 0) {
+      logger.debug({
+        removedCount: indicesToRemove.length,
+        remainingMessages: messages.length,
+      }, 'Removed merged secondary messages')
     }
   }
   

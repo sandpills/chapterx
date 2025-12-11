@@ -890,7 +890,14 @@ export class AgentLoop {
         ? this.executeWithInlineTools.bind(this)
         : this.executeWithTools.bind(this)
       
-      const { completion, toolCallIds, preambleMessageIds, fullCompletionText } = await executeMethod(
+      const { 
+        completion, 
+        toolCallIds, 
+        preambleMessageIds, 
+        fullCompletionText,
+        sentMessageIds: inlineSentMessageIds,
+        messageContexts: inlineMessageContexts
+      } = await executeMethod(
         contextResult.request, 
         config, 
         channelId,
@@ -970,8 +977,22 @@ export class AgentLoop {
       responseText = await this.replaceMentions(responseText, discordContext.messages)
 
       let sentMessageIds: string[] = []
-      if (responseText.trim()) {
-        // Send as reply to triggering message
+      
+      // Check if inline execution already sent messages
+      if (inlineSentMessageIds && inlineSentMessageIds.length > 0) {
+        // Inline execution already sent messages progressively
+        sentMessageIds = inlineSentMessageIds
+        logger.debug({ sentMessageIds }, 'Using message IDs from inline tool execution')
+        
+        // Handle refusal reactions
+        if (wasRefused && sentMessageIds.length > 0) {
+          for (const msgId of sentMessageIds) {
+            await this.connector.addReaction(channelId, msgId, '🛑')
+          }
+          logger.info({ sentMessageIds }, 'Added refusal reaction to inline-sent messages')
+        }
+      } else if (responseText.trim()) {
+        // Send as reply to triggering message (legacy path for non-inline execution)
         sentMessageIds = await this.connector.sendMessage(channelId, responseText, triggeringMessageId)
         // Track bot's message IDs for reply detection
         sentMessageIds.forEach((id) => this.botMessageIds.add(id))
@@ -1009,6 +1030,13 @@ export class AgentLoop {
           [],
           []
         )
+        
+        // Set per-message context chunks if inline execution provided them
+        if (inlineMessageContexts) {
+          for (const [msgId, contextChunk] of Object.entries(inlineMessageContexts)) {
+            this.activationStore.setMessageContext(activation.id, msgId, contextChunk)
+          }
+        }
         
         // Complete and persist the activation
         await this.activationStore.completeActivation(activation.id)
@@ -1091,13 +1119,26 @@ export class AgentLoop {
     channelId: string,
     triggeringMessageId: string,
     _activationId?: string
-  ): Promise<{ completion: any; toolCallIds: string[]; preambleMessageIds: string[]; fullCompletionText?: string }> {
+  ): Promise<{ 
+    completion: any; 
+    toolCallIds: string[]; 
+    preambleMessageIds: string[]; 
+    fullCompletionText?: string;
+    sentMessageIds: string[];
+    messageContexts: Record<string, string>;
+  }> {
     let accumulatedOutput = ''
     let toolDepth = 0
     const allToolCallIds: string[] = []
     const allPreambleMessageIds: string[] = []
+    const allSentMessageIds: string[] = []
+    const messageContexts: Record<string, string> = {}
     const maxToolDepth = config.max_tool_depth
     const pendingToolPersistence: Array<{ call: ToolCall; result: ToolResult }> = []
+    
+    // Track context position for each message
+    // Each sent message will get a context chunk from contextStartPos to contextEndPos
+    let lastContextEndPos = 0
     
     // Keep track of the base request (without accumulated output)
     // Add </function_calls> as stop sequence so we can intercept and execute tools
@@ -1210,7 +1251,23 @@ export class AgentLoop {
             await this.toolSystem.persistToolUse(this.botId, channelId, call, result)
           }
           
-          const displayText = this.toolSystem.stripToolXml(accumulatedOutput)
+          // Send any remaining text and track context
+          const displayText = this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput)).stripped
+          const sentSoFarLen = lastContextEndPos > 0 
+            ? this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput.slice(0, lastContextEndPos))).stripped.length 
+            : 0
+          const remainingText = displayText.slice(sentSoFarLen).trim()
+          if (remainingText) {
+            const finalMsgIds = await this.connector.sendMessage(channelId, remainingText, allSentMessageIds.length === 0 ? triggeringMessageId : undefined)
+            allSentMessageIds.push(...finalMsgIds)
+            finalMsgIds.forEach(id => this.botMessageIds.add(id))
+            // Context chunk for final message is everything from lastContextEndPos
+            const finalContext = accumulatedOutput.slice(lastContextEndPos)
+            for (const msgId of finalMsgIds) {
+              messageContexts[msgId] = finalContext
+            }
+          }
+          
           return {
             completion: {
               content: [{ type: 'text', text: displayText }],
@@ -1220,7 +1277,9 @@ export class AgentLoop {
             },
             toolCallIds: allToolCallIds,
             preambleMessageIds: allPreambleMessageIds,
-            fullCompletionText: accumulatedOutput,  // Full output with tool calls for activation store
+            fullCompletionText: accumulatedOutput,
+            sentMessageIds: allSentMessageIds,
+            messageContexts,
           }
         }
         // Inside function_calls - the stop sequence was in a parameter, continue
@@ -1246,8 +1305,24 @@ export class AgentLoop {
           await this.toolSystem.persistToolUse(this.botId, channelId, call, result)
         }
         
-        // Done - return final completion with tool XML stripped for display
-        const displayText = this.toolSystem.stripToolXml(accumulatedOutput)
+        // Done - send any remaining text and return
+        const displayText = this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput)).stripped
+        // Calculate remaining text that hasn't been sent yet
+        const sentSoFar = lastContextEndPos > 0 
+          ? this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput.slice(0, lastContextEndPos))).stripped.length 
+          : 0
+        const remainingText = displayText.slice(sentSoFar).trim()
+        if (remainingText) {
+          const finalMsgIds = await this.connector.sendMessage(channelId, remainingText, allSentMessageIds.length === 0 ? triggeringMessageId : undefined)
+          allSentMessageIds.push(...finalMsgIds)
+          finalMsgIds.forEach(id => this.botMessageIds.add(id))
+          // Context chunk for final message
+          const finalContext = accumulatedOutput.slice(lastContextEndPos)
+          for (const msgId of finalMsgIds) {
+            messageContexts[msgId] = finalContext
+          }
+        }
+        
         return {
           completion: {
             content: [{ type: 'text', text: displayText }],
@@ -1257,7 +1332,9 @@ export class AgentLoop {
           },
           toolCallIds: allToolCallIds,
           preambleMessageIds: allPreambleMessageIds,
-          fullCompletionText: accumulatedOutput,  // Full output with tool calls for activation store
+          fullCompletionText: accumulatedOutput,
+          sentMessageIds: allSentMessageIds,
+          messageContexts,
         }
       }
       
@@ -1266,6 +1343,28 @@ export class AgentLoop {
         toolCount: toolParse.calls.length, 
         toolDepth 
       }, 'Executing inline tools')
+      
+      // PROGRESSIVE DISPLAY: Send the visible text before tool calls to Discord
+      // Strip both tool XML and thinking blocks to get display text
+      const strippedToolXml = this.toolSystem.stripToolXml(toolParse.beforeText)
+      const visibleBeforeText = this.stripThinkingBlocks(strippedToolXml).stripped.trim()
+      let sentMsgIdsThisRound: string[] = []
+      
+      if (visibleBeforeText) {
+        // Send the pre-tool visible text as a message
+        sentMsgIdsThisRound = await this.connector.sendMessage(
+          channelId, 
+          visibleBeforeText, 
+          toolDepth === 0 ? triggeringMessageId : undefined  // Only reply to trigger on first message
+        )
+        allSentMessageIds.push(...sentMsgIdsThisRound)
+        sentMsgIdsThisRound.forEach(id => this.botMessageIds.add(id))
+        
+        logger.debug({ 
+          messageIds: sentMsgIdsThisRound, 
+          textLength: visibleBeforeText.length 
+        }, 'Sent pre-tool message to Discord')
+      }
       
       const resultsTexts: string[] = []
       
@@ -1320,8 +1419,20 @@ export class AgentLoop {
       
       // Inject results after the function_calls block
       const resultsText = resultsTexts.join('\n\n---\n\n')
-      accumulatedOutput = toolParse.beforeText + toolParse.fullMatch + 
+      const newAccumulated = toolParse.beforeText + toolParse.fullMatch + 
         this.toolSystem.formatToolResultForInjection('', resultsText)
+      
+      // CONTEXT TRACKING: Associate sent messages with their context chunks
+      // The context chunk is everything from lastContextEndPos to current position (after tool result)
+      if (sentMsgIdsThisRound.length > 0) {
+        const contextChunk = newAccumulated.slice(lastContextEndPos)
+        for (const msgId of sentMsgIdsThisRound) {
+          messageContexts[msgId] = contextChunk
+        }
+        lastContextEndPos = newAccumulated.length
+      }
+      
+      accumulatedOutput = newAccumulated
       
       // After injecting, we need to continue and get the model's response to the tool results
       // This will either be: more tool calls, final text, or stop on participant
@@ -1341,7 +1452,22 @@ export class AgentLoop {
       await this.toolSystem.persistToolUse(this.botId, channelId, call, result)
     }
     
-    const displayText = this.toolSystem.stripToolXml(accumulatedOutput)
+    // Send any remaining text
+    const displayText = this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput)).stripped
+    const sentSoFar = lastContextEndPos > 0 
+      ? this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput.slice(0, lastContextEndPos))).stripped.length 
+      : 0
+    const remainingText = displayText.slice(sentSoFar).trim()
+    if (remainingText) {
+      const finalMsgIds = await this.connector.sendMessage(channelId, remainingText + '\n[Max tool depth reached]', allSentMessageIds.length === 0 ? triggeringMessageId : undefined)
+      allSentMessageIds.push(...finalMsgIds)
+      finalMsgIds.forEach(id => this.botMessageIds.add(id))
+      const finalContext = accumulatedOutput.slice(lastContextEndPos) + '\n[Max tool depth reached]'
+      for (const msgId of finalMsgIds) {
+        messageContexts[msgId] = finalContext
+      }
+    }
+    
     return {
       completion: {
         content: [{ type: 'text', text: displayText + '\n[Max tool depth reached]' }],
@@ -1351,7 +1477,9 @@ export class AgentLoop {
       },
       toolCallIds: allToolCallIds,
       preambleMessageIds: allPreambleMessageIds,
-      fullCompletionText: accumulatedOutput + '\n[Max tool depth reached]',  // Full output for activation store
+      fullCompletionText: accumulatedOutput + '\n[Max tool depth reached]',
+      sentMessageIds: allSentMessageIds,
+      messageContexts,
     }
   }
   
@@ -1403,7 +1531,14 @@ export class AgentLoop {
     channelId: string,
     triggeringMessageId: string,
     activationId?: string  // Optional activation ID for recording completions
-  ): Promise<{ completion: any; toolCallIds: string[]; preambleMessageIds: string[]; fullCompletionText?: string }> {
+  ): Promise<{ 
+    completion: any; 
+    toolCallIds: string[]; 
+    preambleMessageIds: string[]; 
+    fullCompletionText?: string;
+    sentMessageIds?: string[];
+    messageContexts?: Record<string, string>;
+  }> {
     let depth = 0
     let currentRequest = llmRequest
     let allToolResults: Array<{ call: any; result: any }> = []

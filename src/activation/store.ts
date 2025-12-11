@@ -43,6 +43,7 @@ export class ActivationStore {
       botId,
       trigger,
       completions: [],
+      messageContexts: {},
       startedAt: new Date(),
     }
     
@@ -117,6 +118,28 @@ export class ActivationStore {
   }
   
   /**
+   * Set the LLM-visible context chunk for a specific message
+   * Used for progressive display with inline tool execution
+   */
+  setMessageContext(activationId: string, messageId: string, contextChunk: string): void {
+    const activation = this.activeActivations.get(activationId)
+    if (!activation) {
+      logger.warn({ activationId, messageId }, 'Tried to set message context for unknown activation')
+      return
+    }
+    
+    activation.messageContexts[messageId] = contextChunk
+    
+    logger.debug({
+      activationId,
+      messageId,
+      contextLength: contextChunk.length,
+      hasToolXml: contextChunk.includes('function_calls'),
+    }, 'Set message context chunk')
+  }
+  
+  
+  /**
    * Complete and persist an activation
    */
   async completeActivation(activationId: string): Promise<void> {
@@ -188,6 +211,7 @@ export class ActivationStore {
         
         activations.push({
           ...stored,
+          messageContexts: stored.messageContexts || {},  // Handle older activations without messageContexts
           startedAt: new Date(stored.startedAt),
           endedAt: stored.endedAt ? new Date(stored.endedAt) : undefined,
         })
@@ -217,6 +241,22 @@ export class ActivationStore {
         for (const messageId of completion.sentMessageIds) {
           map.set(messageId, { activation, completion })
         }
+      }
+    }
+    
+    return map
+  }
+  
+  /**
+   * Build a unified map of messageId -> context chunk from all activations
+   * Each message gets its own LLM-visible context for reconstruction
+   */
+  buildMessageContextMap(activations: Activation[]): Map<string, string> {
+    const map = new Map<string, string>()
+    
+    for (const activation of activations) {
+      for (const [messageId, contextChunk] of Object.entries(activation.messageContexts)) {
+        map.set(messageId, contextChunk)
       }
     }
     

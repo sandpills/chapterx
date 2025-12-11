@@ -53,6 +53,10 @@ export interface Activation {
   // Ordered sequence of completions
   completions: Completion[]
   
+  // Per-message context chunks: messageId → LLM-visible context for that message
+  // Used for progressive display with inline tool execution
+  messageContexts: Record<string, string>
+  
   // When this activation started
   startedAt: Date
   
@@ -69,6 +73,7 @@ export interface StoredActivation {
   botId: string
   trigger: ActivationTrigger
   completions: Completion[]
+  messageContexts: Record<string, string>
   startedAt: string  // ISO date string
   endedAt?: string
 }
