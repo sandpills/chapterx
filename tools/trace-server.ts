@@ -1177,7 +1177,7 @@ const HTML = `<!DOCTYPE html>
           </div>
         </div>
         
-        \${cb ? \`
+        \${cb?.tokenEstimates ? \`
         <div class="section open">
           <div class="section-header" onclick="toggleSection(this)">
             <h3>Token Breakdown</h3>
@@ -1185,16 +1185,16 @@ const HTML = `<!DOCTYPE html>
           </div>
           <div class="section-content">
             <div class="token-bar">
-              <div class="token-segment system" style="width: \${(cb.tokenEstimates.system / cb.tokenEstimates.total * 100)}%">System</div>
-              <div class="token-segment messages" style="width: \${(cb.tokenEstimates.messages / cb.tokenEstimates.total * 100)}%">Messages</div>
-              <div class="token-segment images" style="width: \${(cb.tokenEstimates.images / cb.tokenEstimates.total * 100)}%">Images</div>
-              <div class="token-segment tools" style="width: \${(cb.tokenEstimates.tools / cb.tokenEstimates.total * 100)}%">Tools</div>
+              <div class="token-segment system" style="width: \${cb.tokenEstimates.total ? (cb.tokenEstimates.system / cb.tokenEstimates.total * 100) : 0}%">System</div>
+              <div class="token-segment messages" style="width: \${cb.tokenEstimates.total ? (cb.tokenEstimates.messages / cb.tokenEstimates.total * 100) : 0}%">Messages</div>
+              <div class="token-segment images" style="width: \${cb.tokenEstimates.total ? (cb.tokenEstimates.images / cb.tokenEstimates.total * 100) : 0}%">Images</div>
+              <div class="token-segment tools" style="width: \${cb.tokenEstimates.total ? (cb.tokenEstimates.tools / cb.tokenEstimates.total * 100) : 0}%">Tools</div>
             </div>
             <div style="display: flex; gap: 24px; font-size: 0.85rem;">
-              <span><span style="color: #6366f1;">●</span> System: \${formatTokens(cb.tokenEstimates.system)}</span>
-              <span><span style="color: #22c55e;">●</span> Messages: \${formatTokens(cb.tokenEstimates.messages)}</span>
-              <span><span style="color: #f59e0b;">●</span> Images: \${formatTokens(cb.tokenEstimates.images)}</span>
-              <span><span style="color: #ef4444;">●</span> Tools: \${formatTokens(cb.tokenEstimates.tools)}</span>
+              <span><span style="color: #6366f1;">●</span> System: \${formatTokens(cb.tokenEstimates.system || 0)}</span>
+              <span><span style="color: #22c55e;">●</span> Messages: \${formatTokens(cb.tokenEstimates.messages || 0)}</span>
+              <span><span style="color: #f59e0b;">●</span> Images: \${formatTokens(cb.tokenEstimates.images || 0)}</span>
+              <span><span style="color: #ef4444;">●</span> Tools: \${formatTokens(cb.tokenEstimates.tools || 0)}</span>
             </div>
             \${cb.didTruncate ? \`<div style="margin-top: 12px; color: var(--warning);">⚠️ Context was truncated: \${cb.messagesRolledOff} messages rolled off (\${cb.truncateReason})</div>\` : ''}
             \${(() => {
@@ -1276,7 +1276,7 @@ const HTML = `<!DOCTYPE html>
               \${(t.rawDiscordMessages || []).map((m, i) => \`
                 <div class="message-item" onclick="toggleMessage(this)">
                   <span class="message-author">\${m.author.displayName}</span>
-                  <span class="message-content">\${truncate(m.content, 80)}</span>
+                  <span class="message-content">\${escapeHtml(truncate(m.content, 80))}</span>
                   \${m.id === t.triggeringMessageId ? '<span class="trigger-badge">TRIGGER</span>' : ''}
                   <div class="message-meta">ID: \${m.id} | \${new Date(m.timestamp).toLocaleTimeString()}\${m.attachments?.length ? ' | ' + m.attachments.length + ' attachment(s)' : ''}</div>
                   <div class="message-expanded">\${escapeHtml(m.content)}</div>
@@ -1297,7 +1297,7 @@ const HTML = `<!DOCTYPE html>
                 <div class="message-item \${m.hasCacheControl ? 'cache-marker-msg' : ''}" onclick="toggleMessage(this)">
                   <span style="color: var(--text-muted); margin-right: 8px;">#\${m.position}</span>
                   <span class="message-author">\${m.participant}</span>
-                  <span class="message-content">\${truncate(m.contentPreview, 60)}</span>
+                  <span class="message-content">\${escapeHtml(truncate(m.contentPreview, 60))}</span>
                   \${m.isTrigger ? '<span class="trigger-badge">TRIGGER</span>' : ''}
                   \${m.hasCacheControl ? '<span class="cache-badge">📍 CACHE</span>' : ''}
                   <span style="color: var(--text-muted); margin-left: 8px;">~\${formatTokens(m.tokenEstimate)} tk</span>
