@@ -932,7 +932,8 @@ export class AgentLoop {
         config, 
         channelId,
         triggeringMessageId || '',
-        activation?.id
+        activation?.id,
+        discordContext.messages  // For post-hoc participant truncation
       )
       endProfile('llmCall')
 
@@ -945,7 +946,11 @@ export class AgentLoop {
         logger.warn({ stopReason: completion.stopReason }, 'LLM refused to complete request')
       }
 
-      // 8. Send response
+      // 8. Process and send response
+      // For inline execution, messages are already sent and processed by finalizeInlineExecution
+      // For legacy execution, we need to process and send here
+      const isInlineExecution = inlineSentMessageIds && inlineSentMessageIds.length > 0
+      
       let responseText = completion.content
         .filter((c: any) => c.type === 'text')
         .map((c: any) => c.text)
@@ -954,63 +959,68 @@ export class AgentLoop {
       logger.debug({
         contentBlocks: completion.content.length,
         textBlocks: completion.content.filter((c: any) => c.type === 'text').length,
-        responseLength: responseText.length
+        responseLength: responseText.length,
+        isInlineExecution,
       }, 'Extracted response text')
 
-      // Truncate if model continues past a stop sequence (post-hoc enforcement)
-      // This catches cases where the API ignored stop sequences (e.g., OpenRouter with >4 sequences)
-      const truncateResult = this.truncateAtParticipant(
-        responseText, 
-        discordContext.messages, 
-        config.innerName,
-        contextResult.request.stop_sequences
-      )
-      responseText = truncateResult.text
+      // For non-inline execution, apply truncation and stripping
+      // (Inline execution already did this in finalizeInlineExecution)
+      if (!isInlineExecution) {
+        // Truncate if model continues past a stop sequence (post-hoc enforcement)
+        // This catches cases where the API ignored stop sequences (e.g., OpenRouter with >4 sequences)
+        const truncateResult = this.truncateAtParticipant(
+          responseText, 
+          discordContext.messages, 
+          config.innerName,
+          contextResult.request.stop_sequences
+        )
+        responseText = truncateResult.text
 
-      // Strip ALL <thinking>...</thinking> sections (respecting backtick escaping)
-      const { stripped: strippedResponse, content: thinkingContents } = this.stripThinkingBlocks(responseText)
-      
-      if (thinkingContents.length > 0) {
-        const allThinkingContent = thinkingContents.join('\n\n---\n\n')
+        // Strip ALL <thinking>...</thinking> sections (respecting backtick escaping)
+        const { stripped: strippedResponse, content: thinkingContents } = this.stripThinkingBlocks(responseText)
         
-        logger.debug({ 
-          thinkingBlocks: thinkingContents.length,
-          totalThinkingLength: allThinkingContent.length 
-        }, 'Stripped thinking sections from response')
-        
-        // Send thinking as debug message if enabled
-        if (config.debug_thinking && allThinkingContent) {
-          const thinkingDebugContent = `.💭 ${allThinkingContent}`
-          if (thinkingDebugContent.length <= 1800) {
-            // Send as regular message
-            await this.connector.sendMessage(channelId, thinkingDebugContent, triggeringMessageId)
-          } else {
-            // Send as text file attachment
-            await this.connector.sendMessageWithAttachment(
-              channelId,
-              '.💭',
-              {
-                name: 'thinking.txt',
-                content: allThinkingContent,
-              },
-              triggeringMessageId
-            )
+        if (thinkingContents.length > 0) {
+          const allThinkingContent = thinkingContents.join('\n\n---\n\n')
+          
+          logger.debug({ 
+            thinkingBlocks: thinkingContents.length,
+            totalThinkingLength: allThinkingContent.length 
+          }, 'Stripped thinking sections from response')
+          
+          // Send thinking as debug message if enabled
+          if (config.debug_thinking && allThinkingContent) {
+            const thinkingDebugContent = `.💭 ${allThinkingContent}`
+            if (thinkingDebugContent.length <= 1800) {
+              // Send as regular message
+              await this.connector.sendMessage(channelId, thinkingDebugContent, triggeringMessageId)
+            } else {
+              // Send as text file attachment
+              await this.connector.sendMessageWithAttachment(
+                channelId,
+                '.💭',
+                {
+                  name: 'thinking.txt',
+                  content: allThinkingContent,
+                },
+                triggeringMessageId
+              )
+            }
           }
+          
+          // Use the already-stripped response
+          responseText = strippedResponse.trim()
         }
-        
-        // Use the already-stripped response
-        responseText = strippedResponse.trim()
-      }
 
-      // Strip <reply:@username> prefix if bot included it (bot responses are already Discord replies)
-      const replyPattern = /^\s*<reply:@[^>]+>\s*/
-      if (replyPattern.test(responseText)) {
-        responseText = responseText.replace(replyPattern, '')
-        logger.debug('Stripped reply prefix from bot response')
-      }
+        // Strip <reply:@username> prefix if bot included it (bot responses are already Discord replies)
+        const replyPattern = /^\s*<reply:@[^>]+>\s*/
+        if (replyPattern.test(responseText)) {
+          responseText = responseText.replace(replyPattern, '')
+          logger.debug('Stripped reply prefix from bot response')
+        }
 
-      // Replace <@username> with <@USER_ID> for Discord mentions
-      responseText = await this.replaceMentions(responseText, discordContext.messages)
+        // Replace <@username> with <@USER_ID> for Discord mentions
+        responseText = await this.replaceMentions(responseText, discordContext.messages)
+      }
 
       let sentMessageIds: string[] = []
       
@@ -1164,7 +1174,8 @@ export class AgentLoop {
     config: BotConfig,
     channelId: string,
     triggeringMessageId: string,
-    _activationId?: string
+    _activationId?: string,
+    discordMessages?: DiscordMessage[]  // For post-hoc participant truncation
   ): Promise<{ 
     completion: any; 
     toolCallIds: string[]; 
@@ -1291,42 +1302,21 @@ export class AgentLoop {
             stopSequence: completion.raw?.stop_sequence 
           }, 'Stopped on participant name outside function_calls, returning')
           
-          // Persist all pending tool uses with the final accumulated output
-          for (const { call, result } of pendingToolPersistence) {
-            call.originalCompletionText = accumulatedOutput
-            await this.toolSystem.persistToolUse(this.botId, channelId, call, result)
-          }
-          
-          // Send any remaining text and track context
-          const displayText = this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput)).stripped
-          const sentSoFarLen = lastContextEndPos > 0 
-            ? this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput.slice(0, lastContextEndPos))).stripped.length 
-            : 0
-          const remainingText = displayText.slice(sentSoFarLen).trim()
-          if (remainingText) {
-            const finalMsgIds = await this.connector.sendMessage(channelId, remainingText, allSentMessageIds.length === 0 ? triggeringMessageId : undefined)
-            allSentMessageIds.push(...finalMsgIds)
-            finalMsgIds.forEach(id => this.botMessageIds.add(id))
-            // Context chunk for final message is everything from lastContextEndPos
-            const finalContext = accumulatedOutput.slice(lastContextEndPos)
-            for (const msgId of finalMsgIds) {
-              messageContexts[msgId] = finalContext
-            }
-          }
-          
-          return {
-            completion: {
-              content: [{ type: 'text', text: displayText }],
-              stopReason: completion.stopReason,
-              usage: completion.usage,
-              model: completion.model,
-            },
-            toolCallIds: allToolCallIds,
-            preambleMessageIds: allPreambleMessageIds,
-            fullCompletionText: accumulatedOutput,
-            sentMessageIds: allSentMessageIds,
+          return this.finalizeInlineExecution({
+            accumulatedOutput,
+            pendingToolPersistence,
+            allToolCallIds,
+            allPreambleMessageIds,
+            allSentMessageIds,
             messageContexts,
-          }
+            lastContextEndPos,
+            channelId,
+            triggeringMessageId,
+            config,
+            llmRequest,
+            discordMessages,
+            stopReason: completion.stopReason,
+          })
         }
         // Inside function_calls - the stop sequence was in a parameter, continue
         logger.debug({ 
@@ -1345,43 +1335,22 @@ export class AgentLoop {
           logger.warn('Incomplete tool call detected in non-streaming mode')
         }
         
-        // Persist all pending tool uses with the final accumulated output
-        for (const { call, result } of pendingToolPersistence) {
-          call.originalCompletionText = accumulatedOutput
-          await this.toolSystem.persistToolUse(this.botId, channelId, call, result)
-        }
-        
-        // Done - send any remaining text and return
-        const displayText = this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput)).stripped
-        // Calculate remaining text that hasn't been sent yet
-        const sentSoFar = lastContextEndPos > 0 
-          ? this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput.slice(0, lastContextEndPos))).stripped.length 
-          : 0
-        const remainingText = displayText.slice(sentSoFar).trim()
-        if (remainingText) {
-          const finalMsgIds = await this.connector.sendMessage(channelId, remainingText, allSentMessageIds.length === 0 ? triggeringMessageId : undefined)
-          allSentMessageIds.push(...finalMsgIds)
-          finalMsgIds.forEach(id => this.botMessageIds.add(id))
-          // Context chunk for final message
-          const finalContext = accumulatedOutput.slice(lastContextEndPos)
-          for (const msgId of finalMsgIds) {
-            messageContexts[msgId] = finalContext
-          }
-        }
-        
-        return {
-          completion: {
-            content: [{ type: 'text', text: displayText }],
-            stopReason: completion.stopReason,
-            usage: completion.usage,
-            model: completion.model,
-          },
-          toolCallIds: allToolCallIds,
-          preambleMessageIds: allPreambleMessageIds,
-          fullCompletionText: accumulatedOutput,
-          sentMessageIds: allSentMessageIds,
+        // Done - finalize and return
+        return this.finalizeInlineExecution({
+          accumulatedOutput,
+          pendingToolPersistence,
+          allToolCallIds,
+          allPreambleMessageIds,
+          allSentMessageIds,
           messageContexts,
-        }
+          lastContextEndPos,
+          channelId,
+          triggeringMessageId,
+          config,
+          llmRequest,
+          discordMessages,
+          stopReason: completion.stopReason,
+        })
       }
       
       // Execute tools and collect results
@@ -1492,44 +1461,143 @@ export class AgentLoop {
     
     logger.warn('Reached max inline tool depth')
     
-    // Persist all pending tool uses with the final accumulated output
+    return this.finalizeInlineExecution({
+      accumulatedOutput,
+      pendingToolPersistence,
+      allToolCallIds,
+      allPreambleMessageIds,
+      allSentMessageIds,
+      messageContexts,
+      lastContextEndPos,
+      channelId,
+      triggeringMessageId,
+      config,
+      llmRequest,
+      discordMessages,
+      suffix: '[Max tool depth reached]',
+    })
+  }
+  
+  
+  /**
+   * Finalize inline tool execution - truncate, persist, send remaining text, and build result.
+   * This ensures trace always matches what was actually sent to Discord.
+   */
+  private async finalizeInlineExecution(params: {
+    accumulatedOutput: string;
+    pendingToolPersistence: Array<{ call: ToolCall; result: ToolResult }>;
+    allToolCallIds: string[];
+    allPreambleMessageIds: string[];
+    allSentMessageIds: string[];
+    messageContexts: Record<string, string>;
+    lastContextEndPos: number;
+    channelId: string;
+    triggeringMessageId: string;
+    config: BotConfig;
+    llmRequest: any;
+    discordMessages?: DiscordMessage[];
+    suffix?: string;  // e.g., '[Max tool depth reached]'
+    stopReason?: string;
+  }): Promise<{
+    completion: any;
+    toolCallIds: string[];
+    preambleMessageIds: string[];
+    fullCompletionText: string;
+    sentMessageIds: string[];
+    messageContexts: Record<string, string>;
+    actualSentText: string;  // For trace validation
+  }> {
+    let { accumulatedOutput } = params
+    const { 
+      pendingToolPersistence, allToolCallIds, allPreambleMessageIds, 
+      allSentMessageIds, messageContexts, lastContextEndPos,
+      channelId, triggeringMessageId, config, llmRequest, discordMessages,
+      suffix, stopReason
+    } = params
+    
+    // 1. Truncate at participant names (post-hoc enforcement)
+    if (discordMessages) {
+      const truncResult = this.truncateAtParticipant(
+        accumulatedOutput, 
+        discordMessages, 
+        config.innerName, 
+        llmRequest.stop_sequences
+      )
+      if (truncResult.truncatedAt) {
+        logger.info({ truncatedAt: truncResult.truncatedAt }, 'Truncated inline output at participant')
+        accumulatedOutput = truncResult.text
+      }
+    }
+    
+    // 2. Persist all pending tool uses with the final (truncated) accumulated output
     for (const { call, result } of pendingToolPersistence) {
       call.originalCompletionText = accumulatedOutput
       await this.toolSystem.persistToolUse(this.botId, channelId, call, result)
     }
     
-    // Send any remaining text
-    const displayText = this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput)).stripped
+    // 3. Calculate display text and remaining unsent portion
+    let displayText = this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput)).stripped
     const sentSoFar = lastContextEndPos > 0 
       ? this.stripThinkingBlocks(this.toolSystem.stripToolXml(accumulatedOutput.slice(0, lastContextEndPos))).stripped.length 
       : 0
-    const remainingText = displayText.slice(sentSoFar).trim()
+    let remainingText = displayText.slice(sentSoFar).trim()
+    
+    // 4. Strip <reply:@username> prefix if bot included it
+    const replyPattern = /^\s*<reply:@[^>]+>\s*/
+    if (replyPattern.test(remainingText)) {
+      remainingText = remainingText.replace(replyPattern, '')
+    }
+    
+    // 5. Replace <@username> with <@USER_ID> for Discord mentions
+    if (discordMessages) {
+      remainingText = await this.replaceMentions(remainingText, discordMessages)
+      displayText = await this.replaceMentions(displayText, discordMessages)
+    }
+    
+    // 6. Add suffix if provided
+    const suffixText = suffix ? `\n${suffix}` : ''
+    if (remainingText && suffix) {
+      remainingText += suffixText
+    }
+    
+    // 8. Send remaining text to Discord
+    let actualSentText = ''
     if (remainingText) {
-      const finalMsgIds = await this.connector.sendMessage(channelId, remainingText + '\n[Max tool depth reached]', allSentMessageIds.length === 0 ? triggeringMessageId : undefined)
+      actualSentText = remainingText
+      const finalMsgIds = await this.connector.sendMessage(
+        channelId, 
+        remainingText, 
+        allSentMessageIds.length === 0 ? triggeringMessageId : undefined
+      )
       allSentMessageIds.push(...finalMsgIds)
       finalMsgIds.forEach(id => this.botMessageIds.add(id))
-      const finalContext = accumulatedOutput.slice(lastContextEndPos) + '\n[Max tool depth reached]'
+      
+      // Context chunk for final message
+      const finalContext = accumulatedOutput.slice(lastContextEndPos) + suffixText
       for (const msgId of finalMsgIds) {
         messageContexts[msgId] = finalContext
       }
     }
     
+    // 9. Build final completion text for trace
+    const fullCompletionText = accumulatedOutput + suffixText
+    
     return {
       completion: {
-        content: [{ type: 'text', text: displayText + '\n[Max tool depth reached]' }],
-        stopReason: 'end_turn' as const,
+        content: [{ type: 'text', text: displayText + suffixText }],
+        stopReason: (stopReason || 'end_turn') as any,
         usage: { inputTokens: 0, outputTokens: 0 },
         model: '',
       },
       toolCallIds: allToolCallIds,
       preambleMessageIds: allPreambleMessageIds,
-      fullCompletionText: accumulatedOutput + '\n[Max tool depth reached]',
+      fullCompletionText,
       sentMessageIds: allSentMessageIds,
       messageContexts,
+      actualSentText,
     }
   }
-  
-  
+
   /**
    * Build a continuation request with accumulated output as prefill
    */
@@ -1576,7 +1644,8 @@ export class AgentLoop {
     config: BotConfig,
     channelId: string,
     triggeringMessageId: string,
-    activationId?: string  // Optional activation ID for recording completions
+    activationId?: string,  // Optional activation ID for recording completions
+    _discordMessages?: DiscordMessage[]  // Unused here, for signature compatibility
   ): Promise<{ 
     completion: any; 
     toolCallIds: string[]; 
