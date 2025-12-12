@@ -252,8 +252,8 @@ export class DiscordConnector {
       
       // Extend fetch to include firstMessageId (cache marker) if provided
       // This ensures cache stability - we fetch back far enough to include the cached portion
-      // If firstMessageId is specified, ensure it's included and trim to it
-      // This is used for cache stability and export API
+      // If firstMessageId is specified, ensure it's included by extending fetch if needed
+      // NEVER trim data - cache stability should only ADD data, not remove it
       if (firstMessageId) {
         logger.debug({
           currentMessageCount: messages.length,
@@ -309,14 +309,14 @@ export class DiscordConnector {
           }
         }
         
-        // Trim to cache marker (keep messages from marker onwards)
+        // Note: We intentionally do NOT trim to cache marker
+        // Cache stability should only add data, never remove it
         if (firstIndex >= 0) {
-          messages = messages.slice(firstIndex)
           logger.debug({ 
-            trimmedFrom: firstIndex, 
-            remaining: messages.length,
+            cacheMarkerIndex: firstIndex,
+            totalMessages: messages.length,
             firstMessageId
-          }, 'Trimmed to cache marker')
+          }, 'Cache marker found in fetch window (no trimming)')
         }
       }
       

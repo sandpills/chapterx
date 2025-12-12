@@ -529,11 +529,6 @@ export class ContextBuilder {
       for (const block of msg.content) {
         if (block.type === 'text') {
           msgSize += (block as any).text.length
-        } else if (block.type === 'image') {
-          const imageBlock = block as any
-          if (imageBlock.source?.data) {
-            msgSize += imageBlock.source.data.length
-          }
         } else if (block.type === 'tool_result') {
           const toolBlock = block as any
           const content = typeof toolBlock.content === 'string' 
@@ -541,6 +536,8 @@ export class ContextBuilder {
             : JSON.stringify(toolBlock.content)
           msgSize += content.length
         }
+        // Images are NOT counted - they have separate limits (max_images, 5MB per image)
+        // Counting base64 data would cause over-aggressive truncation
       }
       
       if (keptChars + msgSize > charLimit) {
