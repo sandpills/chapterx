@@ -412,8 +412,11 @@ export class LLMMiddleware {
       if (parts.length > 0) {
         content.push({ type: 'text', text: parts.join('\n') })
       }
-      // Add images
-      content.push(...images)
+      // Add images, stripping tokenEstimate (Anthropic API doesn't allow extra fields)
+      for (const img of images) {
+        const { tokenEstimate, ...cleanImage } = img as any
+        content.push(cleanImage)
+      }
       return {
         role: 'user',
         content,
@@ -436,7 +439,9 @@ export class LLMMiddleware {
         parts.push((block as any).text)
       } else if (block.type === 'image') {
         // Images are handled separately - will be added as content blocks in Anthropic format
-        images.push(block)
+        // Strip tokenEstimate (Anthropic API doesn't allow extra fields)
+        const { tokenEstimate, ...cleanImage } = block as any
+        images.push(cleanImage)
       } else if (block.type === 'tool_use') {
         const toolUse = block as any
         // Format as: Name>[toolname]: {json}
