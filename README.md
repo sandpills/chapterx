@@ -146,40 +146,33 @@ npm start
 
 ```yaml
 # Identity
-name: Bot Display Name
-innerName: BotName  # Used in LLM context
+innerName: BotName  # synced to discord display name
 
 # Model
 mode: prefill  # or 'chat'
-continuationModel: claude-3-5-sonnet-20241022
+continuation_model: claude-3-5-sonnet-20241022
 temperature: 1.0
-maxTokens: 4096
-topP: 1.0
+max_tokens: 4096
 
 # Context
-recencyWindowMessages: 400  # Optional: max messages
-recencyWindowCharacters: 100000  # Optional: max characters
+recency_window_messages: 400  # Optional: max messages
+recency_window_characters: 100000  # Optional: max characters
 # When both specified, whichever limit is reached first is used
-rollingThreshold: 50
+rolling_threshold: 50
 
 # Images
-includeImages: true
-maxImages: 5
+include_images: true
+max_images: 5
 
 # Tools
-toolsEnabled: true
-toolOutputVisible: false
-maxToolDepth: 100
+tools_enabled: true
 
-# Retry
-llmRetries: 3
-discordBackoffMax: 32000
 
 # Misc
-systemPrompt: "Optional system prompt"
-replyOnRandom: 0
-replyOnName: false
-maxQueuedReplies: 1
+system_prompt: "Optional system prompt"
+reply_on_random: 0
+reply_on_name: false
+max_queued_replies: 1
 ```
 
 ### Discord Commands
@@ -188,16 +181,15 @@ maxQueuedReplies: 1
 ```
 .history botname
 ---
-first: https://discord.com/channels/.../message_id
-last: https://discord.com/channels/.../message_id
 ```
 
 **Config Command** (must be pinned):
 ```
 .config botname
 ---
+innerName: new bot name
 temperature: 0.7
-maxTokens: 2000
+max_tokens: 2000
 ```
 
 **M Commands**:
