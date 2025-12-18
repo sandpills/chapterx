@@ -143,9 +143,8 @@ export interface ModelConfig {
  */
 export interface BotConfig {
   // Identity
-  name: string
-  innerName: string  // Keep camelCase for internal use
-  
+  innerName: string  // Bot's identity name (used in context and synced to Discord nickname)
+
   // Model config
   mode: 'prefill' | 'chat'
   prefill_thinking?: boolean  // If true, prefill with <thinking> tag to enable reasoning

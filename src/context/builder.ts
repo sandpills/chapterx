@@ -89,7 +89,8 @@ export class ContextBuilder {
       messages,
       discordContext.images,
       discordContext.documents,
-      config
+      config,
+      botDiscordUsername
     )
 
     // 5. Interleave historical tool use from cache (limited to last 5 calls with results)
@@ -616,7 +617,8 @@ export class ContextBuilder {
     messages: DiscordMessage[],
     images: CachedImage[],
     documents: CachedDocument[],
-    config: BotConfig
+    config: BotConfig,
+    botDiscordUsername?: string
   ): Promise<ParticipantMessage[]> {
     const participantMessages: ParticipantMessage[] = []
 
@@ -689,11 +691,28 @@ export class ContextBuilder {
     for (const msg of messages) {
       const content: ContentBlock[] = []
 
-      // Add text content
+      // Add text content, replacing bot username mentions with innerName
       if (msg.content.trim()) {
+        let textContent = msg.content
+
+        // Replace mentions of bot's Discord username with innerName
+        // This ensures consistent identity in context (e.g., <@larping> -> <@Larp>)
+        if (botDiscordUsername && config.innerName && botDiscordUsername !== config.innerName) {
+          // Replace <@botUsername> mentions
+          textContent = textContent.replace(
+            new RegExp(`<@${botDiscordUsername}>`, 'gi'),
+            `<@${config.innerName}>`
+          )
+          // Replace <reply:@botUsername> prefixes
+          textContent = textContent.replace(
+            new RegExp(`<reply:@${botDiscordUsername}>`, 'gi'),
+            `<reply:@${config.innerName}>`
+          )
+        }
+
         content.push({
           type: 'text',
-          text: msg.content,
+          text: textContent,
         })
       }
 
@@ -796,8 +815,13 @@ export class ContextBuilder {
         }
       }
 
+      // Use innerName for bot's own messages (so bot sees consistent identity)
+      const isBotMessage = msg.author.bot && botDiscordUsername &&
+        msg.author.username === botDiscordUsername
+      const participantName = isBotMessage ? config.innerName : msg.author.displayName
+
       participantMessages.push({
-        participant: msg.author.displayName,
+        participant: participantName,
         content,
         timestamp: msg.timestamp,
         messageId: msg.id,
@@ -1375,6 +1399,12 @@ export class ContextBuilder {
     
     // Add conversation boundary marker (lowest priority)
     sequences.push('<<HUMAN_CONVERSATION_END>>')
+
+    // I'm not sure where the above came from, but it seems
+    // to be something claude is familiar with. it sends the below when
+    // its about to break character for safety reasons,
+    // so we're adding it here too
+    sequences.push('<<HUMAN_CONVERSATION_START>>')
 
     return sequences
   }

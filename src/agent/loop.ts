@@ -501,14 +501,38 @@ export class AgentLoop {
       }
 
       // 3. Check for reply to bot's message (but ignore replies from other bots without mention)
-      if (message.reference?.messageId && this.botMessageIds.has(message.reference.messageId)) {
-        // If the replying user is a bot, only activate if they explicitly mentioned us
-        if (message.author?.bot) {
-          logger.debug({ messageId: message.id, author: message.author?.username }, 'Ignoring bot reply without mention')
-          continue
+      if (message.reference?.messageId) {
+        // First check in-memory cache (fast path for recent messages)
+        let isReplyToBot = this.botMessageIds.has(message.reference.messageId)
+
+        // If not in cache, fetch the referenced message and check if it's from us
+        // This handles replies to messages sent before the bot restarted
+        if (!isReplyToBot && this.botUserId) {
+          try {
+            const referencedMessage = await message.channel.messages.fetch(message.reference.messageId)
+            if (referencedMessage.author?.id === this.botUserId) {
+              isReplyToBot = true
+              // Add to cache for future lookups
+              this.botMessageIds.add(message.reference.messageId)
+              logger.debug({ refMessageId: message.reference.messageId }, 'Reply target verified as bot message (fetched)')
+            }
+          } catch (error: any) {
+            logger.debug({
+              error: error.message,
+              refMessageId: message.reference.messageId
+            }, 'Could not fetch referenced message for reply detection')
+          }
         }
-        logger.debug({ messageId: message.id }, 'Activated by reply')
-        return true
+
+        if (isReplyToBot) {
+          // If the replying user is a bot, only activate if they explicitly mentioned us
+          if (message.author?.bot) {
+            logger.debug({ messageId: message.id, author: message.author?.username }, 'Ignoring bot reply without mention')
+            continue
+          }
+          logger.debug({ messageId: message.id }, 'Activated by reply')
+          return true
+        }
       }
 
       // 4. Random chance activation
@@ -617,6 +641,8 @@ export class AgentLoop {
         // This avoids anchoring to messages that slide out of the fetchable window.
         authorized_roles: [],  // Will apply after loading config
         pinnedConfigs,  // Reuse pre-fetched pinned configs (avoids second API call)
+        botName: this.botId,  // For .history targeting by bot name
+        botInnerName: preConfig.innerName,  // For .history targeting by innerName
       })
       endProfile('fetchContext')
 
@@ -656,9 +682,12 @@ export class AgentLoop {
         channelConfigs: inheritedPinnedConfigs,
       })
       endProfile('configLoad')
-      
+
       // Record config in trace (for debugging)
       traceSetConfig(config)
+
+      // Sync bot nickname if innerName changed (handles .config overrides)
+      await this.connector.setBotNickname(discordContext.guildId, config.innerName)
 
       // Initialize MCP servers from config (once per bot)
       if (!this.mcpInitialized && config.mcp_servers && config.mcp_servers.length > 0) {
@@ -1376,8 +1405,8 @@ export class AgentLoop {
       if (visibleBeforeText) {
         // Send the pre-tool visible text as a message
         sentMsgIdsThisRound = await this.connector.sendMessage(
-          channelId, 
-          visibleBeforeText, 
+          channelId,
+          visibleBeforeText,
           toolDepth === 0 ? triggeringMessageId : undefined  // Only reply to trigger on first message
         )
         allSentMessageIds.push(...sentMsgIdsThisRound)
@@ -1573,8 +1602,8 @@ export class AgentLoop {
     if (remainingText) {
       actualSentText = remainingText
       const finalMsgIds = await this.connector.sendMessage(
-        channelId, 
-        remainingText, 
+        channelId,
+        remainingText,
         allSentMessageIds.length === 0 ? triggeringMessageId : undefined
       )
       allSentMessageIds.push(...finalMsgIds)

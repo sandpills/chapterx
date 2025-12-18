@@ -34,6 +34,8 @@ export interface FetchContextParams {
   firstMessageId?: string  // Optional: Stop when this message is encountered
   authorized_roles?: string[]
   pinnedConfigs?: string[]  // Optional: Pre-fetched pinned configs (skips fetchPinned call)
+  botName?: string  // Bot identifier (folder name) for .history targeting
+  botInnerName?: string  // Bot innerName for .history targeting (allows .history Larp instead of .history larping)
 }
 
 export class DiscordConnector {
@@ -42,6 +44,7 @@ export class DiscordConnector {
   private imageCache = new Map<string, CachedImage>()
   private urlToFilename = new Map<string, string>()  // URL -> filename for disk cache lookup
   private urlMapPath: string  // Path to URL map file
+  private defaultNickname: string | null = null  // Nickname to set when joining new guilds
 
   constructor(
     private queue: EventQueue,
@@ -152,7 +155,18 @@ export class DiscordConnector {
       }
       const pinnedMessages = await channel.messages.fetchPinned(false)
       const sortedPinned = Array.from(pinnedMessages.values()).sort((a, b) => a.id.localeCompare(b.id))
-      return this.extractConfigs(sortedPinned)
+
+      // Debug logging for pinned configs
+      logger.info({
+        channelId,
+        pinnedCount: sortedPinned.length,
+        pinnedContents: sortedPinned.map(m => m.content.substring(0, 100))
+      }, 'Fetched pinned messages')
+
+      const configs = this.extractConfigs(sortedPinned)
+      logger.info({ channelId, configCount: configs.length, configs }, 'Extracted configs from pinned')
+
+      return configs
     } catch (error) {
       logger.warn({ error, channelId }, 'Failed to fetch pinned configs')
       return []
@@ -163,7 +177,7 @@ export class DiscordConnector {
    * Fetch context from Discord (messages, configs, images)
    */
   async fetchContext(params: FetchContextParams): Promise<DiscordContext> {
-    const { channelId, depth, targetMessageId, firstMessageId, authorized_roles } = params
+    const { channelId, depth, targetMessageId, firstMessageId, authorized_roles, botName, botInnerName } = params
 
     // Profiling helper
     const timings: Record<string, number> = {}
@@ -207,7 +221,9 @@ export class DiscordConnector {
         targetMessageId,
         undefined,  // Let .history commands define their own boundaries
         depth,
-        authorized_roles
+        authorized_roles,
+        botName,
+        botInnerName
       )
       endProfile('messagesFetch')
       
@@ -237,7 +253,9 @@ export class DiscordConnector {
             threadStartMessageId,  // End at the message that started the thread
             undefined,
             Math.max(0, depth - messages.length),  // Remaining message budget
-            authorized_roles
+            authorized_roles,
+            botName,
+            botInnerName
           )
           
           logger.debug({
@@ -460,7 +478,9 @@ export class DiscordConnector {
     startFromId: string | undefined,
     stopAtId: string | undefined,
     maxMessages: number,
-    authorizedRoles?: string[]
+    authorizedRoles?: string[],
+    botName?: string,
+    botInnerName?: string
   ): Promise<Message[]> {
     const results: Message[] = []
     let currentBefore = startFromId
@@ -543,6 +563,22 @@ export class DiscordConnector {
         if (message.content?.startsWith('.history')) {
           logger.debug({ messageId: message.id, content: message.content }, 'Found .history command during traversal')
 
+          // Extract target from first line (e.g., ".history Larp" -> target is "Larp")
+          const firstLine = message.content.split('\n')[0] || ''
+          const historyTarget = firstLine.slice('.history'.length).trim() || undefined
+
+          // If target specified, check if it matches this bot (by name or innerName)
+          if (historyTarget) {
+            const targetMatches = (botName && historyTarget.toLowerCase() === botName.toLowerCase()) ||
+                                 (botInnerName && historyTarget.toLowerCase() === botInnerName.toLowerCase())
+            if (!targetMatches) {
+              logger.debug({ historyTarget, botName, botInnerName }, 'Skipping .history - target does not match this bot')
+              batchResults.push(message)
+              continue
+            }
+            logger.debug({ historyTarget, botName, botInnerName }, '.history target matches this bot')
+          }
+
           // Check authorization
           let authorized = true
           if (authorizedRoles && authorizedRoles.length > 0) {
@@ -612,7 +648,9 @@ export class DiscordConnector {
                   histLastId,      // End point (include this message and older)
                   histFirstId,     // Start point (stop when reached, or undefined)
                   maxMessages - results.length - batchResults.length,  // Account for current batch
-                  authorizedRoles
+                  authorizedRoles,
+                  botName,
+                  botInnerName
                 )
 
                 logger.debug({ 
@@ -991,8 +1029,9 @@ export class DiscordConnector {
    * Send a webhook message
    * For tool output, creates/reuses a webhook in the channel
    * Falls back to regular message if webhooks aren't supported (e.g., threads)
+   * Returns the message ID if successful
    */
-  async sendWebhook(channelId: string, content: string, username: string): Promise<void> {
+  async sendWebhook(channelId: string, content: string, username: string): Promise<string | undefined> {
     return retryDiscord(async () => {
       const channel = await this.client.channels.fetch(channelId) as TextChannel
 
@@ -1000,36 +1039,38 @@ export class DiscordConnector {
       const isThread = 'isThread' in channel && typeof channel.isThread === 'function' ? channel.isThread() : false
       if (!channel || !channel.isTextBased() || isThread) {
         logger.debug({ channelId, isThread }, 'Channel does not support webhooks, using regular message')
-        await this.sendMessage(channelId, content)
-        return
+        const msgIds = await this.sendMessage(channelId, content)
+        return msgIds[0]
       }
 
       try {
-      // Get or create webhook for this channel
+        // Get or create webhook for this channel
         const webhooks = await (channel as any).fetchWebhooks()
-      let webhook = webhooks.find((wh: any) => wh.name === 'Chapter3-Tools')
+        let webhook = webhooks.find((wh: any) => wh.name === 'Chapter3-Tools')
 
-      if (!webhook) {
-        webhook = await channel.createWebhook({
-          name: 'Chapter3-Tools',
-          reason: 'Tool output display',
+        if (!webhook) {
+          webhook = await channel.createWebhook({
+            name: 'Chapter3-Tools',
+            reason: 'Tool output display',
+          })
+          logger.debug({ channelId, webhookId: webhook.id }, 'Created webhook')
+        }
+
+        // Send via webhook
+        const sent = await webhook.send({
+          content,
+          username,
+          avatarURL: this.client.user?.displayAvatarURL(),
         })
-        logger.debug({ channelId, webhookId: webhook.id }, 'Created webhook')
-      }
 
-      // Send via webhook
-      await webhook.send({
-        content,
-        username,
-        avatarURL: this.client.user?.displayAvatarURL(),
-      })
-
-      logger.debug({ channelId, username }, 'Sent webhook message')
+        logger.debug({ channelId, username, messageId: sent.id }, 'Sent webhook message')
+        return sent.id
       } catch (error: any) {
         // Threads and some channel types don't support webhooks
         // Fall back to regular message
         logger.warn({ channelId, error: error.message }, 'Webhook failed, falling back to regular message')
-        await this.sendMessage(channelId, content)
+        const msgIds = await this.sendMessage(channelId, content)
+        return msgIds[0]
       }
     }, this.options.maxBackoffMs)
   }
@@ -1049,6 +1090,51 @@ export class DiscordConnector {
       await message.pin()
       logger.debug({ channelId, messageId }, 'Pinned message')
     }, this.options.maxBackoffMs)
+  }
+
+  /**
+   * Set the bot's nickname in a guild
+   * Syncs the Discord display name with innerName from config
+   */
+  async setBotNickname(guildId: string, nickname: string): Promise<void> {
+    try {
+      const guild = await this.client.guilds.fetch(guildId)
+
+      // Fetch bot member explicitly (guild.members.me may be null if not cached)
+      const botUserId = this.client.user?.id
+      if (!botUserId) {
+        logger.warn({ guildId }, 'Bot user ID not available yet')
+        return
+      }
+
+      const me = await guild.members.fetch(botUserId)
+
+      if (!me) {
+        logger.warn({ guildId }, 'Could not get bot member in guild')
+        return
+      }
+
+      // Only update if different (avoid unnecessary API calls)
+      if (me.nickname !== nickname) {
+        await me.setNickname(nickname)
+        logger.info({ guildId, nickname }, 'Updated bot nickname')
+      }
+    } catch (error: any) {
+      // Don't throw - nickname sync is non-critical
+      logger.warn({ guildId, nickname, error: error.message }, 'Failed to set bot nickname')
+    }
+  }
+
+  /**
+   * Sync bot nickname across all guilds
+   */
+  async syncNicknameAllGuilds(nickname: string): Promise<void> {
+    const guilds = this.client.guilds.cache
+    logger.info({ guildCount: guilds.size, nickname }, 'Syncing bot nickname across all guilds')
+
+    for (const guild of guilds.values()) {
+      await this.setBotNickname(guild.id, nickname)
+    }
   }
 
   /**
@@ -1274,6 +1360,22 @@ export class DiscordConnector {
         timestamp: new Date(),
       })
     })
+
+    // Sync nickname when bot joins a new guild
+    this.client.on('guildCreate', async (guild) => {
+      logger.info({ guildId: guild.id, guildName: guild.name }, 'Bot joined new guild')
+      if (this.defaultNickname) {
+        await this.setBotNickname(guild.id, this.defaultNickname)
+      }
+    })
+  }
+
+  /**
+   * Set the default nickname to use when joining new guilds
+   */
+  setDefaultNickname(nickname: string): void {
+    this.defaultNickname = nickname
+    logger.debug({ nickname }, 'Set default nickname for new guilds')
   }
 
   /**
@@ -1365,19 +1467,30 @@ export class DiscordConnector {
       //         yaml content
       if (msg.content.startsWith('.config')) {
         const lines = msg.content.split('\n')
+        logger.info({
+          messageId: msg.id,
+          lineCount: lines.length,
+          line0: lines[0],
+          line1: lines[1],
+          hasThreeDashes: lines[1] === '---'
+        }, '📌 Found .config message, checking format')
+
         if (lines.length > 2 && lines[1] === '---') {
           // Extract target from first line (space-separated after .config)
           const firstLine = lines[0]!
           const target = firstLine.slice('.config'.length).trim() || undefined
-          
+
           const yaml = lines.slice(2).join('\n')
-          
+
           // Prepend target to YAML if present
           if (target) {
             configs.push(`target: ${target}\n${yaml}`)
           } else {
-          configs.push(yaml)
+            configs.push(yaml)
           }
+          logger.info({ target, yaml }, '📌 Extracted config from pinned message')
+        } else {
+          logger.warn({ lineCount: lines.length, line1: lines[1] }, '📌 .config message has invalid format (need line 2 to be ---)')
         }
       }
     }

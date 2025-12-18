@@ -187,6 +187,24 @@ async function main() {
     // Set bot's Discord user ID for mention detection
     agentLoop.setBotUserId(botUserId)
 
+    // Sync bot nickname on startup
+    // Load base config (no guild/channel overrides) to get innerName
+    try {
+      const baseConfig = configSystem.loadConfig({
+        botName,
+        guildId: '',  // No guild-specific overrides for startup
+        channelConfigs: [],
+      })
+      if (baseConfig.innerName) {
+        // Set default nickname for new guild joins
+        connector.setDefaultNickname(baseConfig.innerName)
+        // Sync across all existing guilds
+        await connector.syncNicknameAllGuilds(baseConfig.innerName)
+      }
+    } catch (error) {
+      logger.warn({ error }, 'Failed to sync nickname on startup (non-critical)')
+    }
+
     // Start API server if configured
     let apiServer: ApiServer | null = null
     const apiPort = process.env.API_PORT ? parseInt(process.env.API_PORT) : 3000

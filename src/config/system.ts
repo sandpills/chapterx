@@ -109,24 +109,26 @@ export class ConfigSystem {
   private parseChannelConfig(yamlString: string, botName: string): Partial<BotConfig> {
     try {
       const config = YAML.parse(yamlString) || {}
-      
-      logger.debug({ 
-        yamlString, 
-        parsedConfig: config, 
-        target: config.target, 
+
+      // More visible logging for debugging
+      logger.info({
+        yamlString,
+        parsedConfig: config,
+        target: config.target,
         botName,
-        match: config.target === botName
-      }, 'Parsing channel config')
-      
+        willApply: !config.target || config.target === botName
+      }, '📌 Parsing channel config from pinned message')
+
       // If config has a target field, only apply if it matches this bot
       if (config.target && config.target !== botName) {
-        logger.debug({ target: config.target, botName }, 'Skipping config with different target')
+        logger.info({ target: config.target, botName }, '📌 Skipping config - target does not match this bot')
         return {}
       }
-      
+
       // Remove target field from config (it's metadata, not a config value)
       delete config.target
-      
+
+      logger.info({ appliedConfig: config }, '📌 Applying channel config override')
       return config
     } catch (error) {
       logger.warn({ error, yaml: yamlString }, 'Failed to parse channel config')
@@ -209,8 +211,8 @@ export class ConfigSystem {
 
     return {
       // Identity (required, no defaults)
-      name: config.name || '',
-      innerName: config.innerName || config.name || '',
+      // Support 'name' in YAML for backwards compatibility, but only innerName is used
+      innerName: config.innerName || (config as any).name || '',
 
       // Model config
       mode: config.mode || 'prefill',
