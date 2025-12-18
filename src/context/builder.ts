@@ -61,6 +61,8 @@ export class ContextBuilder {
 
     let messages = discordContext.messages
 
+    logger.debug(messages, "discordContext.messages")
+
     // Track which messages were merged (for tracing)
     const mergedMessageIds = new Set<string>()
 

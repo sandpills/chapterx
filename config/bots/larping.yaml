@@ -1,0 +1,19 @@
+name: Claude
+innerName: Claude
+
+mode: prefill
+continuation_model: claude-sonnet-4-20250514
+temperature: 1.0
+max_tokens: 4096
+
+recency_window_messages: 400
+recency_window_characters: 100000
+rolling_threshold: 50
+
+include_images: true
+max_images: 5
+
+tools_enabled: false
+
+# system_prompt:  |
+#   Respond to the chat, where your username is shown as ${botInnerName}. Only respond with the content of your message, without including your username.

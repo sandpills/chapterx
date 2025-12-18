@@ -82,6 +82,8 @@ export class LLMMiddleware {
         ? this.transformToPrefill(request, provider)
         : this.transformToChat(request, provider)
 
+    logger.debug(providerRequest, "Provider request")
+
     // Execute with retries
     const completion = await retryLLM(
       () => provider.complete(providerRequest),
@@ -163,11 +165,14 @@ export class LLMMiddleware {
         content: [prefixContent],
       })
     }
+
     
+    logger.debug(request.messages, 'request.messages')
     for (let i = 0; i < request.messages.length; i++) {
       const msg = request.messages[i]!
       const isLastMessage = i === request.messages.length - 1
       const formatted = this.formatContentForPrefill(msg.content, msg.participant)
+      logger.debug(formatted, 'formatted message')
       const hasImages = formatted.images.length > 0
       const isEmpty = !formatted.text.trim() && !hasImages
       const hasCacheMarker = !!msg.cacheControl
@@ -254,6 +259,7 @@ export class LLMMiddleware {
     // Flush any remaining conversation, insert tools near end
     // Note: By this point, we've already passed the cache marker (if any),
     // so all remaining content is uncached
+    logger.debug(currentConversation, 'currentConversation')
     if (currentConversation.length > 0) {
       if (request.tools && request.tools.length > 0 && currentConversation.length > 10) {
         // Insert tools ~10 messages from the end
@@ -371,7 +377,7 @@ export class LLMMiddleware {
           if (lastTextIdx >= 0) {
             (userMsg.content[lastTextIdx] as any).text += `:\n${botInnerName}:`
           }
-        }
+      }
       }
       messages.push(userMsg)
     }
