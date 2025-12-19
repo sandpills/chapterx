@@ -33,6 +33,7 @@ export class AgentLoop {
   private activeChannels = new Set<string>()  // Track channels currently being processed
   private activationStore: ActivationStore
   private cacheDir: string
+  private lastInnerNameByGuild = new Map<string, string>()  // Track last innerName per guild for switch detection
 
   constructor(
     private botId: string,
@@ -47,6 +48,31 @@ export class AgentLoop {
   ) {
     this.activationStore = new ActivationStore(cacheDir)
     this.cacheDir = cacheDir
+  }
+
+  /**
+   * Parse a .switch command, handling character names with spaces
+   * Format: ".switch [characterName] [optional messageId]"
+   * Message IDs are Discord snowflakes (17-19 digits)
+   */
+  private parseSwitchCommand(content: string): { character: string; messageId?: string } | null {
+    if (!content.startsWith('.switch ')) return null
+    const afterSwitch = content.slice('.switch '.length).trim()
+    if (!afterSwitch) return null
+
+    const parts = afterSwitch.split(/\s+/)
+
+    // Check if last part looks like a message ID (all digits, 17-19 chars)
+    const lastPart = parts[parts.length - 1]
+    const hasMessageId = lastPart && /^\d{17,19}$/.test(lastPart)
+
+    const characterParts = hasMessageId ? parts.slice(0, -1) : parts
+    if (characterParts.length === 0) return null
+
+    const character = characterParts.join(' ').toLowerCase()
+    const messageId = hasMessageId ? lastPart : undefined
+
+    return { character, messageId }
   }
 
   /**
@@ -646,7 +672,205 @@ export class AgentLoop {
       })
       endProfile('fetchContext')
 
-      // Note: Cache stability anchor is now set AFTER context building, based on the first 
+      // Character switching and era filtering
+      // Design:
+      // - .history [character] = user clears context, defines where chat STARTS
+      // - .switch [character] = auto-posted on config change, marks character boundaries for filtering
+      //
+      // On every request, we filter to only include:
+      // 1. Messages after most recent .history for current character (context floor)
+      // 2. Messages in current character's era (based on .switch markers)
+
+      const currentInnerNameLower = preConfig.innerName.toLowerCase()
+
+      // If we don't have tracking state (e.g., after restart), derive from .switch commands
+      if (!this.lastInnerNameByGuild.has(guildId)) {
+        // Find the most recent .switch command to determine what character was last active
+        for (let i = discordContext.messages.length - 1; i >= 0; i--) {
+          const msg = discordContext.messages[i]
+          const parsed = this.parseSwitchCommand(msg?.content || '')
+          if (parsed) {
+            this.lastInnerNameByGuild.set(guildId, parsed.character)
+            logger.info({ guildId, lastCharacter: parsed.character }, '🔄 Rebuilt character tracking from .switch commands')
+            break
+          }
+        }
+      }
+
+      const lastInnerName = this.lastInnerNameByGuild.get(guildId)
+
+      // Check if there's a .history context floor and whether we have a .switch after it
+      // This ensures every character after .history has a boundary marker
+      let contextFloorIndex = -1
+      for (let i = 0; i < discordContext.messages.length; i++) {
+        const content = discordContext.messages[i]?.content
+        if (content?.startsWith('.history')) {
+          const firstLine = content.split('\n')[0] || ''
+          const target = firstLine.slice('.history'.length).trim().toLowerCase()
+          if (!target || target === this.botId.toLowerCase() || target === currentInnerNameLower) {
+            contextFloorIndex = i
+          }
+        }
+      }
+
+      // Check if we have a .switch for current character AFTER the context floor
+      let hasSwitchAfterHistory = false
+      if (contextFloorIndex >= 0) {
+        for (let i = contextFloorIndex + 1; i < discordContext.messages.length; i++) {
+          const parsed = this.parseSwitchCommand(discordContext.messages[i]?.content || '')
+          if (parsed && parsed.character === currentInnerNameLower) {
+            hasSwitchAfterHistory = true
+            break
+          }
+        }
+      }
+
+      // Check if current character has ANY .switch in context
+      const hasAnySwitchForUs = discordContext.messages.some(msg => {
+        const parsed = this.parseSwitchCommand(msg.content || '')
+        return parsed && parsed.character === currentInnerNameLower
+      })
+
+      // We need a .switch if:
+      // 1. There's a .history but no .switch for us after it, OR
+      // 2. We have no .switch anywhere in context (e.g., after restart)
+      const needsSwitchAfterHistory = contextFloorIndex >= 0 && !hasSwitchAfterHistory
+      const needsSwitchForBoundary = !hasAnySwitchForUs
+
+      // Handle first activation (no tracking)
+      if (!lastInnerName) {
+        const hasOldMessages = discordContext.messages.length > 1  // More than just trigger
+
+        // Post .switch to establish character boundary
+        logger.info({
+          character: preConfig.innerName,
+          messageCount: discordContext.messages.length,
+          hasOldMessages
+        }, '🔄 First activation - posting .switch to establish boundary')
+
+        try {
+          const switchContent = triggeringMessageId
+            ? `.switch ${preConfig.innerName} ${triggeringMessageId}`
+            : `.switch ${preConfig.innerName}`
+          await this.connector.sendMessage(channelId, switchContent)
+        } catch (error) {
+          logger.warn({ error }, 'Failed to post initial .switch marker')
+        }
+
+        // Sync nickname immediately
+        await this.connector.setBotNickname(guildId, preConfig.innerName)
+
+        if (hasOldMessages) {
+          // Old messages exist - return early, don't respond (unknown context)
+          if (triggeringMessageId) {
+            try {
+              await this.connector.addReaction(channelId, triggeringMessageId, '✨')
+            } catch (error) {
+              logger.warn({ error }, 'Failed to add switch acknowledgment reaction')
+            }
+          }
+
+          this.lastInnerNameByGuild.set(guildId, currentInnerNameLower)
+          await this.connector.stopTyping(channelId)
+          return
+        }
+        // Fresh start (no old messages) - continue to respond normally
+      }
+
+      // Detect character switch and post .switch marker
+      if (lastInnerName && lastInnerName !== currentInnerNameLower) {
+        logger.info({
+          previousName: lastInnerName,
+          newName: preConfig.innerName
+        }, '🔄 Character switch detected - posting .switch marker')
+
+        // Clear cache marker (prevents stale cached LLM content)
+        this.stateManager.clearCacheMarker(this.botId, channelId)
+
+        // Post .switch command to mark the character boundary
+        // Include trigger message ID so we know where the era actually starts
+        // (the .switch is posted AFTER the trigger, but the era starts FROM the trigger)
+        try {
+          const switchContent = triggeringMessageId
+            ? `.switch ${preConfig.innerName} ${triggeringMessageId}`
+            : `.switch ${preConfig.innerName}`
+          await this.connector.sendMessage(channelId, switchContent)
+          logger.debug({ characterName: preConfig.innerName, triggerMessageId: triggeringMessageId }, 'Posted .switch marker')
+        } catch (error) {
+          logger.warn({ error }, 'Failed to post .switch marker')
+        }
+
+        if (!hasAnySwitchForUs) {
+          // NEW character (first time) - don't respond to M1, just acknowledge the switch
+          // M1 activates the switch, M2 onwards gets full conversation
+          logger.info({
+            character: preConfig.innerName
+          }, '🔄 First time for this character - acknowledging switch, not responding')
+
+          // React to acknowledge the switch
+          if (triggeringMessageId) {
+            try {
+              await this.connector.addReaction(channelId, triggeringMessageId, '✨')
+            } catch (error) {
+              logger.warn({ error }, 'Failed to add switch acknowledgment reaction')
+            }
+          }
+
+          // Sync nickname immediately so Discord shows the new character
+          await this.connector.setBotNickname(guildId, preConfig.innerName)
+
+          // Update tracking, stop typing, and return early - no LLM response for M1
+          this.lastInnerNameByGuild.set(guildId, currentInnerNameLower)
+          await this.connector.stopTyping(channelId)
+          return
+        }
+        // For RETURNING characters (hasAnySwitchForUs=true), filtering will handle it
+      }
+
+      // Handle case: same character but needs .switch boundary
+      // This happens when:
+      // 1. Tracking matches but there's a .history without a .switch after it
+      // 2. After restart, no .switch for us exists in context
+      if ((needsSwitchAfterHistory || needsSwitchForBoundary) && lastInnerName === currentInnerNameLower) {
+        logger.info({
+          character: preConfig.innerName,
+          reason: needsSwitchAfterHistory ? 'after .history' : 'no .switch in context'
+        }, '🔄 Same character but needs .switch boundary - posting marker')
+
+        try {
+          const switchContent = triggeringMessageId
+            ? `.switch ${preConfig.innerName} ${triggeringMessageId}`
+            : `.switch ${preConfig.innerName}`
+          await this.connector.sendMessage(channelId, switchContent)
+        } catch (error) {
+          logger.warn({ error }, 'Failed to post .switch boundary marker')
+        }
+        // Continue normally - don't return early, just needed the boundary marker
+      }
+
+      // Update tracking
+      this.lastInnerNameByGuild.set(guildId, currentInnerNameLower)
+
+      // Always filter messages based on .history (context floor) and .switch (era boundaries)
+      // This runs on EVERY request, not just on switch
+      const filteredMessages = this.filterMessagesByCharacterEra(
+        discordContext.messages,
+        currentInnerNameLower,
+        this.botId.toLowerCase(),
+        triggeringMessageId
+      )
+
+      if (filteredMessages.length !== discordContext.messages.length) {
+        logger.info({
+          originalCount: discordContext.messages.length,
+          filteredCount: filteredMessages.length,
+          removedCount: discordContext.messages.length - filteredMessages.length
+        }, '🔄 Filtered messages by character era')
+      }
+
+      discordContext.messages = filteredMessages
+
+      // Note: Cache stability anchor is now set AFTER context building, based on the first
       // message in the final request (not the first fetched message). This ensures we only
       // anchor to content we're actually sending to the LLM. See the cacheOldestMessageId
       // update after context building below.
@@ -1157,14 +1381,165 @@ export class AgentLoop {
   }
 
   /**
+   * Filter messages by character era
+   *
+   * Uses two types of markers:
+   * - .history [character] = context floor (user-initiated, where chat STARTS)
+   * - .switch [character] = era boundary (auto-posted, marks character changes)
+   *
+   * Returns only messages that belong to the current character's era(s).
+   */
+  private filterMessagesByCharacterEra(
+    messages: DiscordMessage[],
+    currentCharacter: string,
+    botName: string,
+    triggeringMessageId?: string
+  ): DiscordMessage[] {
+    if (messages.length === 0) return messages
+
+    // Find trigger index (messages at/after trigger are always included)
+    const triggerIndex = triggeringMessageId
+      ? messages.findIndex(m => m.id === triggeringMessageId)
+      : messages.length - 1
+
+    // Find context floor: most recent .history for current character or bot
+    let contextFloorIndex = -1
+    for (let i = 0; i < messages.length; i++) {
+      const content = messages[i]?.content
+      if (content?.startsWith('.history')) {
+        const firstLine = content.split('\n')[0] || ''
+        const target = firstLine.slice('.history'.length).trim().toLowerCase()
+        // Empty target, bot name, or current character = our .history
+        if (!target || target === botName || target === currentCharacter) {
+          contextFloorIndex = i
+        }
+      }
+    }
+
+    // Find all .switch markers and build era map
+    // The messageId in .switch indicates where the era actually starts (before the .switch was posted)
+    const switches: { index: number; character: string; eraStartMessageId?: string }[] = []
+    for (let i = 0; i < messages.length; i++) {
+      const parsed = this.parseSwitchCommand(messages[i]?.content || '')
+      if (parsed) {
+        switches.push({ index: i, character: parsed.character, eraStartMessageId: parsed.messageId })
+      }
+    }
+
+    // Build a map of message ID to index for quick lookup
+    const messageIdToIndex = new Map<string, number>()
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]
+      if (msg?.id) {
+        messageIdToIndex.set(msg.id, i)
+      }
+    }
+
+    // Resolve era start indices: use eraStartMessageId if available, otherwise use .switch position
+    const resolvedSwitches = switches.map(sw => {
+      let eraStartIndex = sw.index
+      if (sw.eraStartMessageId) {
+        const resolvedIndex = messageIdToIndex.get(sw.eraStartMessageId)
+        if (resolvedIndex !== undefined) {
+          eraStartIndex = resolvedIndex
+        }
+      }
+      return { ...sw, eraStartIndex }
+    })
+
+    // If no .switch markers, include all messages (after context floor)
+    if (resolvedSwitches.length === 0) {
+      if (contextFloorIndex < 0) {
+        return messages  // No filtering needed
+      }
+      // Just apply context floor
+      return messages.filter((msg, i) => {
+        if (i >= triggerIndex) return true
+        if (i <= contextFloorIndex) return false
+        if (msg.content?.startsWith('.history') || msg.content?.startsWith('.config')) return false
+        return true
+      })
+    }
+
+    // Determine initial era character (before first .switch)
+    // The first .switch is FOR the new character, so initial era was NOT that character
+    // Use eraStartIndex (resolved from trigger message ID) for accurate boundary
+    const firstSwitch = resolvedSwitches[0]!
+    const firstSwitchCharacter = firstSwitch.character
+    const firstSwitchEraStart = firstSwitch.eraStartIndex
+
+    // Filter messages
+    const filtered: DiscordMessage[] = []
+
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i]!
+
+      // Always include trigger and after
+      if (i >= triggerIndex) {
+        filtered.push(msg)
+        continue
+      }
+
+      // Skip command messages
+      if (msg.content?.startsWith('.history') ||
+          msg.content?.startsWith('.config') ||
+          msg.content?.startsWith('.switch')) {
+        continue
+      }
+
+      // Apply context floor
+      if (contextFloorIndex >= 0 && i <= contextFloorIndex) {
+        continue
+      }
+
+      // Determine which character's era this message is in
+      // Use eraStartIndex (resolved from trigger message ID) for accurate boundaries
+      let messageEraCharacter: string | null = null
+
+      if (i < firstSwitchEraStart) {
+        // Before first era start = initial era
+        // Key insight: if WE are the first switch target, messages before our .switch
+        // belong to the PREVIOUS character, not us
+        if (currentCharacter === firstSwitchCharacter) {
+          // We're the first switch target - messages before our switch are NOT ours
+          messageEraCharacter = 'other'
+        } else if (contextFloorIndex >= 0 && i > contextFloorIndex) {
+          // We're NOT the first switch target, and this is after .history
+          // These are our messages from before someone else switched away
+          messageEraCharacter = currentCharacter
+        } else {
+          // Initial era, no .history context floor, we're not first switch
+          messageEraCharacter = currentCharacter
+        }
+      } else {
+        // Find the most recent era start before this message
+        for (const sw of resolvedSwitches) {
+          if (sw.eraStartIndex <= i) {
+            messageEraCharacter = sw.character
+          } else {
+            break
+          }
+        }
+      }
+
+      // Include if in current character's era
+      if (messageEraCharacter === currentCharacter) {
+        filtered.push(msg)
+      }
+    }
+
+    return filtered
+  }
+
+  /**
    * Execute with inline tool injection (Anthropic style)
-   * 
+   *
    * Instead of making separate LLM calls for each tool use, this method:
    * 1. Detects tool calls in the completion stream
    * 2. Executes the tool immediately
    * 3. Injects the result into the assistant's output
    * 4. Continues the completion from there
-   * 
+   *
    * This saves tokens by avoiding context re-sends and preserves the bot's
    * "train of thought" across tool uses.
    */

@@ -486,19 +486,21 @@ export class DiscordConnector {
     let currentBefore = startFromId
     const batchSize = 100
     let foundHistory = false  // Track if we found .history in current recursion level
+    // LOCAL variable for pending newer messages - not on `this` to avoid recursive call conflicts
+    let pendingNewerMessages: Message[] = []
 
-    logger.debug({ 
-      channelId: channel.id, 
+    logger.debug({
+      channelId: channel.id,
       channelName: channel.name,
-      startFromId, 
-      stopAtId, 
+      startFromId,
+      stopAtId,
       maxMessages,
       resultsLength: results.length,
       willEnterLoop: results.length < maxMessages
     }, 'Starting recursive fetch')
 
     let isFirstBatch = true  // Track if this is the first batch
-    
+
     while (results.length < maxMessages && !foundHistory) {
       // Fetch a batch
       const fetchOptions: any = { limit: Math.min(batchSize, maxMessages - results.length) }
@@ -506,29 +508,34 @@ export class DiscordConnector {
         fetchOptions.before = currentBefore
       }
 
-      logger.debug({ 
-        iteration: 'starting', 
-        fetchOptions, 
+      logger.debug({
+        iteration: 'starting',
+        fetchOptions,
         resultsLength: results.length,
         maxMessages,
         isFirstBatch
       }, 'Fetching batch in while loop')
 
       const fetched = await channel.messages.fetch(fetchOptions) as any
-      
+
       logger.debug({ fetchedSize: fetched?.size || 0 }, 'Batch fetched')
-      
+
       if (!fetched || fetched.size === 0) {
         logger.debug('No more messages to fetch')
         break
       }
 
       const batchMessages = Array.from(fetched.values()).reverse()
-      logger.debug({ batchSize: batchMessages.length }, 'Processing batch messages')
+      logger.info({
+        batchSize: batchMessages.length,
+        oldestInBatch: (batchMessages[0] as any)?.id,
+        newestInBatch: (batchMessages[batchMessages.length - 1] as any)?.id,
+        newestContent: (batchMessages[batchMessages.length - 1] as any)?.content?.substring(0, 50),
+      }, '📎 Processing batch (oldest-first order)')
 
       // Collect messages from this batch (will prepend entire batch to results later)
       const batchResults: Message[] = []
-      
+
       // For first batch, include the startFromId message at the end (it's newest)
       if (isFirstBatch && startFromId) {
         try {
@@ -545,8 +552,8 @@ export class DiscordConnector {
       for (const msg of batchMessages) {
         const message = msg as any
 
-        /*logger.debug({ 
-          messageId: message.id, 
+        /*logger.debug({
+          messageId: message.id,
           contentStart: message.content?.substring(0, 30),
           isHistory: message.content?.startsWith('.history')
         }, 'Processing message in recursive fetch')*/
@@ -593,8 +600,8 @@ export class DiscordConnector {
 
           if (authorized) {
             const historyRange = this.parseHistoryCommand(message.content)
-            
-            logger.debug({ 
+
+            logger.debug({
               historyRange,
               messageId: message.id,
               fullContent: message.content
@@ -605,15 +612,14 @@ export class DiscordConnector {
               logger.debug('Empty .history command - clearing prior history')
               this.lastHistoryDidClear = true  // Signal to skip parent fetch for threads
 
-              // Same pattern as non-null .history: save newer messages, clear current batch
+              // Save newer messages locally, clear current batch
               foundHistory = true
-              const newerMessages = [...results]
+              pendingNewerMessages = [...results]
               results.length = 0
-              ;(this as any)._pendingNewerMessages = newerMessages
               batchResults.length = 0  // Discard messages before .history in current batch
 
               logger.debug({
-                newerMessagesSaved: newerMessages.length,
+                newerMessagesSaved: pendingNewerMessages.length,
               }, 'Empty .history: saved newer messages, cleared batch')
 
               // Continue processing to collect messages after .history
@@ -633,14 +639,21 @@ export class DiscordConnector {
                 // This is used for plugin state inheritance
                 this.lastHistoryOriginChannelId = channel.id
 
-                logger.debug({ 
+                // IMPORTANT: Save newer messages BEFORE recursive call
+                // Previously collected results (from earlier batches) are NEWER than .history
+                pendingNewerMessages = [...results]
+
+                logger.info({
                   historyTarget: historyRange.last,
                   targetChannelId,
                   histLastId,
                   histFirstId,
                   remaining: maxMessages - results.length,
                   historyOriginChannelId: channel.id,
-                }, 'Recursively fetching .history target')
+                  newerMessagesSaved: pendingNewerMessages.length,
+                  savedMessageIds: pendingNewerMessages.map((m: any) => m.id).slice(-5),
+                  currentBatchResultsCount: batchResults.length,
+                }, '📎 Recursively fetching .history target (saved newer messages)')
 
                 // RECURSIVE CALL - fetch from .history's boundaries
                 const historicalMessages = await this.fetchMessagesRecursive(
@@ -653,33 +666,26 @@ export class DiscordConnector {
                   botInnerName
                 )
 
-                logger.debug({ 
+                logger.debug({
                   historicalCount: historicalMessages.length,
                   currentResultsCount: results.length,
+                  pendingNewerCount: pendingNewerMessages.length,
                 }, 'Fetched historical messages, combining with current results')
 
                 // Mark that we found .history (stop after this batch)
                 foundHistory = true
-                
-                // IMPORTANT: Previously collected results (from earlier batches) are NEWER than .history
-                // Save them to append at the end for correct chronological order
-                const newerMessages = [...results]
-                
+
                 // Reset results with historical messages (oldest)
                 results.length = 0
                 results.push(...historicalMessages)
-                
-                // Store newer messages to append after we collect batch-after-history
-                ;(this as any)._pendingNewerMessages = newerMessages
-                
+
                 // Clear batchResults - we don't want messages BEFORE .history
                 // Only keep messages AFTER .history in the current channel
                 batchResults.length = 0
-                logger.debug({ 
+                logger.debug({
                   historicalAdded: historicalMessages.length,
-                  newerMessagesSaved: newerMessages.length,
-                }, 'Reset results with historical, saved newer messages for later')
-                
+                }, 'Reset results with historical')
+
                 // Don't add the .history message itself
                 // Continue collecting remaining messages in batch (after .history)
                 continue
@@ -699,29 +705,35 @@ export class DiscordConnector {
 
       // After processing all messages in batch
       if (foundHistory) {
+        // Log what we're about to combine
+        logger.info({
+          historicalCount: results.length,
+          batchAfterHistoryCount: batchResults.length,
+          pendingNewerCount: pendingNewerMessages.length,
+          batchAfterHistoryIds: batchResults.map((m: any) => m.id).slice(-5),
+          pendingNewerIds: pendingNewerMessages.map((m: any) => m.id).slice(-5),
+        }, '📎 About to combine .history results')
+
         // Append messages AFTER .history in current batch
         results.push(...batchResults)
-        
-        // Append previously collected newer messages (batches processed before finding .history)
-        const newerMessages = (this as any)._pendingNewerMessages || []
-        delete (this as any)._pendingNewerMessages
-        
-        if (newerMessages.length > 0) {
-          results.push(...newerMessages)
+
+        // Append previously collected newer messages (LOCAL variable, not affected by recursive calls)
+        if (pendingNewerMessages.length > 0) {
+          results.push(...pendingNewerMessages)
         }
-        
-        logger.debug({ 
+
+        logger.info({
           batchAfterHistory: batchResults.length,
-          newerMessagesAppended: newerMessages.length,
+          newerMessagesAppended: pendingNewerMessages.length,
           totalNow: results.length,
-        }, 'Combined: historical + after-.history + newer batches')
+        }, '📎 Combined: historical + after-.history + newer batches')
         break  // Stop fetching older batches
       } else {
         // Regular batch - prepend (older messages go before)
         results.unshift(...batchResults)
-        logger.debug({ 
-          batchAdded: batchResults.length, 
-          totalNow: results.length 
+        logger.debug({
+          batchAdded: batchResults.length,
+          totalNow: results.length
         }, 'Prepended batch to results')
       }
 

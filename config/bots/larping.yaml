@@ -1,5 +1,5 @@
 # name: Larp
-innerName: John
+innerName: the First One
 
 mode: prefill
 continuation_model: claude-opus-4-5-20251101

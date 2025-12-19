@@ -85,6 +85,14 @@ export class ChannelStateManager {
   }
 
   /**
+   * Clear cache marker (used when context is invalidated, e.g., name change)
+   */
+  clearCacheMarker(botId: string, channelId: string): void {
+    const state = this.getState(botId, channelId)
+    state.lastCacheMarker = null
+  }
+
+  /**
    * Increment message count since last roll
    */
   incrementMessageCount(botId: string, channelId: string): void {
