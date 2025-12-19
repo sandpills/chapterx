@@ -581,6 +581,17 @@ export class AgentLoop {
         }
       }
       
+      // 4. Name mention check
+      if (config.reply_on_name && config.innerName) {
+        const contentLower = message.content?.toLowerCase() || ''
+        const nameLower = config.innerName.toLowerCase()
+        if (contentLower.includes(nameLower)) {
+          logger.debug({ messageId: message.id, name: config.innerName }, 'Activated by name mention')
+          return true
+        }
+      }
+
+      // 5. Random chance activation
       if (config.reply_on_random > 0) {
         const chance = Math.random()
         if (chance < 1 / config.reply_on_random) {

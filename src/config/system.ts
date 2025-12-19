@@ -18,7 +18,7 @@ export interface LoadConfigParams {
 
 export class ConfigSystem {
   private emsMode: boolean
-  
+
   constructor(private configBasePath: string) {
     // Detect EMS mode: if EMS_PATH is set, use chapter2 layout
     this.emsMode = !!process.env.EMS_PATH
@@ -61,7 +61,7 @@ export class ConfigSystem {
     const sharedPath = this.emsMode
       ? join(this.configBasePath, 'config.yaml')  // EMS: /opt/chapter2/ems/config.yaml
       : join(this.configBasePath, 'shared.yaml')  // Default: ./config/shared.yaml
-      
+
     if (!existsSync(sharedPath)) {
       logger.warn({ sharedPath, emsMode: this.emsMode }, 'Shared config not found')
       return {}
@@ -273,9 +273,9 @@ export class ConfigSystem {
       reply_on_random: config.reply_on_random ?? 500,
       reply_on_name: config.reply_on_name ?? false,
       max_queued_replies: config.max_queued_replies || 1,
-      
+
       // Loop prevention
-      max_bot_reply_chain_depth: config.max_bot_reply_chain_depth ?? 2,
+      max_bot_reply_chain_depth: config.max_bot_reply_chain_depth ?? 6,
       bot_reply_chain_depth_emote: config.bot_reply_chain_depth_emote || '🔁',
     }
   }
