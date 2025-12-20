@@ -884,7 +884,8 @@ export class AgentLoop {
         discordContext.messages,
         currentInnerNameLower,
         this.botId.toLowerCase(),
-        triggeringMessageId
+        triggeringMessageId,
+        this.botUserId
       )
 
       if (filteredMessages.length !== discordContext.messages.length) {
@@ -1420,7 +1421,8 @@ export class AgentLoop {
     messages: DiscordMessage[],
     currentCharacter: string,
     botName: string,
-    triggeringMessageId?: string
+    triggeringMessageId?: string,
+    botUserId?: string
   ): DiscordMessage[] {
     if (messages.length === 0) return messages
 
@@ -1445,9 +1447,15 @@ export class AgentLoop {
 
     // Find all .switch markers and build era map
     // The messageId in .switch indicates where the era actually starts (before the .switch was posted)
+    // IMPORTANT: Only consider .switch commands from THIS bot - other bots' switches are irrelevant
     const switches: { index: number; character: string; eraStartMessageId?: string }[] = []
     for (let i = 0; i < messages.length; i++) {
-      const parsed = this.parseSwitchCommand(messages[i]?.content || '')
+      const msg = messages[i]
+      // Skip switches from other bots - each bot manages its own character eras
+      if (botUserId && msg?.author?.id !== botUserId) {
+        continue
+      }
+      const parsed = this.parseSwitchCommand(msg?.content || '')
       if (parsed) {
         switches.push({ index: i, character: parsed.character, eraStartMessageId: parsed.messageId })
       }

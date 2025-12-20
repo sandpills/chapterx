@@ -3,7 +3,7 @@ innerName: claude2
 # Model configuration
 mode: prefill
 prefill_thinking: false
-continuation_model: claude-sonnet-4-20250514
+continuation_model: claude-opus-4-5-20251101
 temperature: 1.0
 max_tokens: 4096
 
@@ -20,4 +20,4 @@ max_images: 5
 tools_enabled: false
 
 # Activation settings
-reply_on_name: false
+auto_reply_own_channel: true
