@@ -272,6 +272,7 @@ export class ConfigSystem {
       context_prefix_file: config.context_prefix_file,
       reply_on_random: config.reply_on_random ?? 500,
       reply_on_name: config.reply_on_name ?? false,
+      auto_reply_own_channel: config.auto_reply_own_channel ?? false,
       max_queued_replies: config.max_queued_replies || 1,
 
       // Loop prevention

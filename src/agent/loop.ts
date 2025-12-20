@@ -467,6 +467,22 @@ export class AgentLoop {
         continue
       }
 
+      // 0. Check for auto-reply in own channel (channel name matches bot's Discord username)
+      if (config?.auto_reply_own_channel) {
+        const botUsername = this.connector.getBotUsername()
+        if (botUsername) {
+          const channelName = await this.connector.getChannelName(channelId)
+          if (channelName && channelName.toLowerCase() === botUsername.toLowerCase()) {
+            const content = message.content?.trim() || ''
+            // Skip dot commands (config, history, switch, etc.)
+            if (!content.startsWith('.')) {
+              logger.debug({ messageId: message.id, channelName, botUsername }, 'Activated by own channel auto-reply')
+              return true
+            }
+          }
+        }
+      }
+
       // 1. Check for m command FIRST (before mention check)
       // This ensures "m continue <@bot>" gets flagged for deletion
       // Only trigger/delete if addressed to THIS bot (mention or reply)

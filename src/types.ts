@@ -203,6 +203,7 @@ export interface BotConfig {
   context_prefix_file?: string // Path to file containing context prefix (relative to config dir)
   reply_on_random: number
   reply_on_name: boolean
+  auto_reply_own_channel: boolean  // Auto-reply in channels matching bot's Discord username
   max_queued_replies: number
   
   // Loop prevention

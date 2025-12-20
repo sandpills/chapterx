@@ -21,4 +21,4 @@ max_images: 5
 tools_enabled: false
 
 # Activation settings
-reply_on_name: true
+auto_reply_own_channel: true
