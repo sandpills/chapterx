@@ -19,3 +19,6 @@ max_images: 5
 
 # Tool configuration
 tools_enabled: false
+
+# Activation settings
+auto_reply_own_channel: true
