@@ -276,7 +276,7 @@ export class ConfigSystem {
       max_queued_replies: config.max_queued_replies || 1,
 
       // Loop prevention
-      max_bot_reply_chain_depth: config.max_bot_reply_chain_depth ?? 6,
+      max_bot_reply_chain_depth: config.max_bot_reply_chain_depth ?? 3,
       bot_reply_chain_depth_emote: config.bot_reply_chain_depth_emote || '🔁',
     }
   }
